@@ -13,17 +13,23 @@ Single-file HTML apps (one `.html` file containing HTML + CSS + JS) are the simp
 cargo install sfhtml
 ```
 
+### Python (pip)
+```bash
+pip install sfhtml
+```
+> The Python package wraps the Rust binary. If the binary is not on `PATH`, install it first via `cargo install sfhtml` or the quick install script below.
+
+### Quick install script (Linux / macOS)
+```bash
+curl -fsSL https://raw.githubusercontent.com/anyrust/sfhtml/main/install.sh | sh
+```
+
 ### From source
 ```bash
 git clone https://github.com/anyrust/sfhtml.git
 cd sfhtml
 cargo build --release
-# Binary at target/release/sfhtml (~2 MB)
-```
-
-### Python (pip)
-```bash
-pip install sfhtml
+# Binary at target/release/sfhtml (~2.5 MB)
 ```
 
 ## Quick Start
@@ -77,7 +83,7 @@ sfhtml page console
 | Command | Description |
 |---------|-------------|
 | `validate <file>` | Check header↔code consistency + syntax |
-| `header-rebuild <file>` | Auto-rebuild header sections from code |
+| `header-rebuild <file>` | Auto-rebuild Section 5 from code |
 | `check-output [file]` | Check symbol balance (brackets, quotes) |
 | `history list\|show\|rollback\|delete\|clean` | Diff history management with rollback |
 
@@ -125,16 +131,17 @@ Vanilla JS, CSS Grid
 - Single file, no build step
 - Zero external dependencies
 
-## 5. Module Map
-- initApp() : line 45 — Application bootstrap
-- render()  : line 120 — Main render function
+## 5. Key Internal Modules
+- `<script type="module">` — App entry: initApp, bindEvents, state management
+- `<script>` — Utility functions, data export
+- `<div id="app">` — Main layout container
+- `function initApp` — Bootstrap: loads config, first render
+- `class DataManager` — Fetches, caches, and normalizes API data
 
-## 6. Style Map
-- .container : line 200 — Main layout
 AI-SKILL-HEADER END -->
 ```
 
-This header lets AI agents understand the file structure without reading the entire codebase.
+Section 5 entries are **block-level anchors** (no line ranges). Anchor types: `<script>` blocks, HTML elements with id, and major `function`/`class` declarations. Run `sfhtml header-rebuild <file>` to auto-generate from code.
 
 ## Output Size Control
 

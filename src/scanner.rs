@@ -169,7 +169,7 @@ pub fn scan_directory(
     } else {
         // Non-recursive with auto-deepen: BFS by depth until 300 HTML found
         let mut queue: Vec<PathBuf> = vec![dir.to_path_buf()];
-        let mut depth = 0;
+        let mut _depth = 0;
 
         while !queue.is_empty() && html_paths.len() < MAX_HTML_FULL {
             let mut next_queue: Vec<PathBuf> = Vec::new();
@@ -217,7 +217,7 @@ pub fn scan_directory(
                 }
             }
 
-            depth += 1;
+            _depth += 1;
             // If we already have enough HTML, stop deepening
             if html_paths.len() >= MAX_HTML_FULL {
                 break;
@@ -548,7 +548,11 @@ pub fn format_text(result: &FullScanResult, top: usize) -> String {
                 (r.path.clone(), right)
             })
             .collect();
-        output.push_str(&crate::output::print_aligned_table(&rows));
+        let max_left = rows.iter().map(|(l, _)| l.len()).max().unwrap_or(0);
+        let table: Vec<_> = rows.iter()
+            .map(|(left, right)| format!("{:<width$}  \u{2192}  {}", left, right, width = max_left))
+            .collect();
+        output.push_str(&table.join("\n"));
         if top > 0 && result.html_files.len() > top {
             output.push_str(&format!("\n  ... {} more full-scanned", result.html_files.len() - top));
         }

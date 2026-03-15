@@ -1,21 +1,17 @@
 mod applier;
 mod browser;
 mod creator;
-mod diagnostic;
 mod differ;
 mod header;
 mod history;
-mod html_structure;
 mod js_scope;
 mod locator;
 mod module_deps;
-mod output;
 mod page;
 mod reader;
 mod scanner;
 mod search;
 mod syntax_check;
-mod timeout;
 mod validator;
 
 use anyhow::Result;
@@ -183,7 +179,7 @@ enum Commands {
         fix: bool,
     },
 
-    /// Rebuild header Sections 5 and 6 from code
+    /// Rebuild header Section 5 from code
     HeaderRebuild {
         /// HTML file path
         file: PathBuf,
@@ -458,7 +454,7 @@ fn main() {
 
 fn run(cli: Cli) -> Result<i32> {
     let json = cli.json;
-    let _trace = diagnostic::TraceLogger::new(cli.trace);
+    let _trace = cli.trace;
 
     match cli.command {
         Commands::Scan { dir, recursive, jobs, top, summary, sort_by, order, r#match, misc_limit } => {
@@ -565,15 +561,8 @@ fn run(cli: Cli) -> Result<i32> {
                 let validation_json = result.validation.as_ref().map(|v| {
                     let status_str = match v.status {
                         applier::ApplyStatus::Success => "success",
-                        applier::ApplyStatus::SuccessWithIssues => "success_with_issues",
-                        applier::ApplyStatus::RolledBack => "rolled_back",
+                        applier::ApplyStatus::SuccessWithWarnings => "success_with_warnings",
                     };
-                    let errors: Vec<serde_json::Value> = v.errors.iter().map(|e| serde_json::json!({
-                        "severity": e.severity,
-                        "line": e.line,
-                        "message": e.message,
-                        "locate_hint": e.locate_hint,
-                    })).collect();
                     let warnings: Vec<serde_json::Value> = v.warnings.iter().map(|w| serde_json::json!({
                         "severity": w.severity,
                         "line": w.line,
@@ -582,13 +571,16 @@ fn run(cli: Cli) -> Result<i32> {
                     })).collect();
                     serde_json::json!({
                         "status": status_str,
-                        "syntax_ok": v.syntax_ok,
-                        "anchor_ok": v.anchor_ok,
-                        "tag_pair_ok": v.tag_pair_ok,
-                        "errors": errors,
                         "warnings": warnings,
                     })
                 });
+                let hunk_details_json: Vec<serde_json::Value> = result.hunk_details.iter().map(|d| serde_json::json!({
+                    "hunk_index": d.hunk_index,
+                    "stated_line": d.stated_line,
+                    "matched_line": d.matched_line,
+                    "fuzz_offset": d.fuzz_offset,
+                    "context_search": d.context_search,
+                })).collect();
                 let json_result = serde_json::json!({
                     "hunks_applied": result.hunks_applied,
                     "lines_removed": result.lines_removed,
@@ -596,6 +588,7 @@ fn run(cli: Cli) -> Result<i32> {
                     "new_size_bytes": result.new_size,
                     "dry_run": dry_run,
                     "history_id": result.history_id,
+                    "hunk_details": hunk_details_json,
                     "validation": validation_json,
                 });
                 println!("{}", serde_json::to_string_pretty(&json_result)?);

@@ -1,6 +1,6 @@
 [package]
 name = "sfhtml"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Single-File HTML AI-Skill CLI — scan, read, edit, validate, and interact with single-file HTML apps"
 license = "MIT"
@@ -26,6 +26,12 @@ num_cpus = "1"
 anyhow = "1"
 tungstenite = "0.21"
 base64 = "0.22"
+oxc_parser = "0.56"
+oxc_allocator = "0.56"
+oxc_ast = "0.56"
+oxc_span = "0.56"
+html5ever = "0.27"
+markup5ever_rcdom = "0.3"
 
 [profile.release]
 lto = true

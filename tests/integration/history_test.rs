@@ -171,8 +171,7 @@ fn test_apply_validation_json_output() {
     assert!(result["validation"].is_object(), "Should include validation");
     let validation = &result["validation"];
     assert!(validation["status"].is_string());
-    assert!(validation["syntax_ok"].is_boolean());
-    assert!(validation["anchor_ok"].is_boolean());
+    assert!(validation["warnings"].is_array());
 
     // Clean up
     if let Some(id) = result["history_id"].as_str() {

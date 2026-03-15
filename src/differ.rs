@@ -12,6 +12,7 @@ pub fn generate_diff(old_text: &str, new_text: &str, old_name: &str, new_name: &
 
 /// Parse a unified diff string into hunks
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct DiffHunk {
     pub old_start: usize,
     pub old_count: usize,

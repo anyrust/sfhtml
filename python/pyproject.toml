@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sfhtml"
-version = "0.1.0"
+version = "0.2.0"
 description = "Single-File HTML AI-Skill CLI — Python wrapper"
 readme = "README.md"
 license = {text = "MIT"}

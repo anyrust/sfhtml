@@ -23,14 +23,12 @@ pub struct HunkDetail {
     pub stated_line: usize,
     pub matched_line: usize,
     pub fuzz_offset: i32,
+    /// true if matched via whole-file context search (line number was wrong)
+    pub context_search: bool,
 }
 
 pub struct ValidationResult {
     pub status: ApplyStatus,
-    pub syntax_ok: bool,
-    pub anchor_ok: bool,
-    pub tag_pair_ok: bool,
-    pub errors: Vec<ValidationIssue>,
     pub warnings: Vec<ValidationIssue>,
 }
 
@@ -38,10 +36,8 @@ pub struct ValidationResult {
 pub enum ApplyStatus {
     /// Edit succeeded with no issues
     Success,
-    /// Edit succeeded but there are warnings/errors in the HTML
-    SuccessWithIssues,
-    /// Edit rolled back due to critical errors
-    RolledBack,
+    /// Edit succeeded but there are warnings
+    SuccessWithWarnings,
 }
 
 #[derive(Debug, Clone)]
@@ -59,7 +55,7 @@ pub fn apply_diff(
     fuzz: usize,
     dry_run: bool,
     backup: bool,
-    force: bool,
+    _force: bool,
 ) -> Result<ApplyResult> {
     let content = std::fs::read_to_string(file_path)?;
     let mut lines: Vec<String> = content.lines().map(|l| l.to_string()).collect();
@@ -94,11 +90,14 @@ pub fn apply_diff(
             Some(pos) => {
                 let fuzz_offset = pos as i64 - search_start as i64;
 
+                let was_context_search = (fuzz_offset.unsigned_abs() as usize) > fuzz;
+
                 hunk_details.push(HunkDetail {
                     hunk_index: hunk_idx + 1,
                     stated_line,
                     matched_line: pos + 1,
                     fuzz_offset: fuzz_offset as i32,
+                    context_search: was_context_search,
                 });
 
                 // Apply the hunk
@@ -210,28 +209,8 @@ pub fn apply_diff(
     let new_content = lines.join("\n");
     let new_size = new_content.len();
 
-    // Post-apply validation — symbol balance check is default ON (unless --force)
-    let validation = if !force {
-        Some(run_post_apply_validation(&new_content))
-    } else {
-        None
-    };
-
-    // Check if validation has critical syntax errors → rollback
-    if let Some(ref v) = validation {
-        if !v.syntax_ok && v.status == ApplyStatus::RolledBack {
-            if !dry_run {
-                let error_summary: Vec<String> = v.errors.iter()
-                    .map(|e| format!("  line {}: {}{}", e.line, e.message,
-                        e.locate_hint.as_ref().map(|h| format!(" (locate: {})", h)).unwrap_or_default()))
-                    .collect();
-                bail!(
-                    "⚠ ROLLBACK: The applied diff introduces syntax errors.\n{}\n  Fix the diff content and retry.\n  Use `--force` to skip validation and write anyway.",
-                    error_summary.join("\n")
-                );
-            }
-        }
-    }
+    // Post-apply validation — always runs, all issues are warnings (never blocks write)
+    let validation = Some(run_post_apply_validation(&new_content));
 
     let mut history_id = None;
 
@@ -307,7 +286,24 @@ fn find_context_match(
         }
     }
 
-    Ok(None)
+    // Fallback: whole-file context search — find ALL matches, pick closest to expected_pos
+    let mut best: Option<usize> = None;
+    let mut best_dist: usize = usize::MAX;
+    for pos in 0..lines.len() {
+        // Skip positions already checked in the fuzz range
+        let dist = (pos as isize - expected_pos as isize).unsigned_abs();
+        if dist <= fuzz {
+            continue;
+        }
+        if matches_at(lines, context, pos) {
+            if dist < best_dist {
+                best = Some(pos);
+                best_dist = dist;
+            }
+        }
+    }
+
+    Ok(best)
 }
 
 fn matches_at(lines: &[String], context: &[&str], pos: usize) -> bool {
@@ -323,41 +319,28 @@ fn matches_at(lines: &[String], context: &[&str], pos: usize) -> bool {
 }
 
 fn run_post_apply_validation(content: &str) -> ValidationResult {
-    let mut errors = Vec::new();
     let mut warnings = Vec::new();
 
-    // 1. Symbol balance check (default ON)
+    // 1. Syntax check via oxc_parser + html5ever (all issues are warnings)
     let syntax_check_result = syntax_check::check_syntax(content, CheckContext::Html);
-    let syntax_ok = syntax_check_result.balanced;
 
     for issue in &syntax_check_result.issues {
-        let vi = ValidationIssue {
-            severity: issue.severity.clone(),
+        warnings.push(ValidationIssue {
+            severity: "warning".to_string(),
             line: issue.line,
             message: issue.message.clone(),
             locate_hint: issue.context_snippet.clone(),
-        };
-        if issue.severity == "error" {
-            errors.push(vi);
-        } else {
-            warnings.push(vi);
-        }
+        });
     }
 
-    // 2. Full validate (anchor consistency, tag-pair, id references)
-    let mut anchor_ok = true;
-    let mut tag_pair_ok = true;
-
+    // 2. Anchor consistency check
     if let Ok(validate_result) = validator::validate_file(content, false) {
-        // Anchor consistency issues
         for name in &validate_result.anchor_consistency.missing_from_code {
-            anchor_ok = false;
-            // Try to find section 5 line referencing this anchor
             let line = find_line_containing(content, name).unwrap_or(0);
-            errors.push(ValidationIssue {
-                severity: "error".to_string(),
+            warnings.push(ValidationIssue {
+                severity: "warning".to_string(),
                 line,
-                message: format!("Header anchor \"{}\" not found in code", name),
+                message: format!("Header anchor \"{}\" not found in code — run `sfhtml header-rebuild` to fix", name),
                 locate_hint: Some(name.clone()),
             });
         }
@@ -366,7 +349,7 @@ fn run_post_apply_validation(content: &str) -> ValidationResult {
             warnings.push(ValidationIssue {
                 severity: "warning".to_string(),
                 line: anchor.line,
-                message: format!("Code declaration \"{}\" not listed in header", anchor.name),
+                message: format!("Code block \"{}\" not listed in header — run `sfhtml header-rebuild` to update", anchor.name),
                 locate_hint: Some(anchor.name.clone()),
             });
         }
@@ -380,9 +363,7 @@ fn run_post_apply_validation(content: &str) -> ValidationResult {
             });
         }
 
-        // Id reference issues
         for issue in &validate_result.syntax_validation.id_issues {
-            tag_pair_ok = false;
             warnings.push(ValidationIssue {
                 severity: "warning".to_string(),
                 line: 0,
@@ -392,20 +373,14 @@ fn run_post_apply_validation(content: &str) -> ValidationResult {
         }
     }
 
-    let status = if !syntax_ok {
-        ApplyStatus::RolledBack
-    } else if !errors.is_empty() || !warnings.is_empty() {
-        ApplyStatus::SuccessWithIssues
-    } else {
+    let status = if warnings.is_empty() {
         ApplyStatus::Success
+    } else {
+        ApplyStatus::SuccessWithWarnings
     };
 
     ValidationResult {
         status,
-        syntax_ok,
-        anchor_ok,
-        tag_pair_ok,
-        errors,
         warnings,
     }
 }
@@ -434,6 +409,8 @@ pub fn format_apply_result(result: &ApplyResult, file_name: &str) -> String {
     for detail in &result.hunk_details {
         let fuzz_str = if detail.fuzz_offset == 0 {
             "(exact)".to_string()
+        } else if detail.context_search {
+            format!("(context-search, offset {:+})", detail.fuzz_offset)
         } else {
             format!("(fuzz {:+})", detail.fuzz_offset)
         };
@@ -459,35 +436,9 @@ pub fn format_apply_result(result: &ApplyResult, file_name: &str) -> String {
             ApplyStatus::Success => {
                 output.push_str("✓ Edit success — no issues detected.\n");
             }
-            ApplyStatus::SuccessWithIssues => {
-                output.push_str("✓ Edit success — but issues detected:\n");
+            ApplyStatus::SuccessWithWarnings => {
+                output.push_str("✓ Edit success — but warnings detected:\n");
             }
-            ApplyStatus::RolledBack => {
-                output.push_str("✗ Edit rolled back — critical syntax errors:\n");
-            }
-        }
-
-        output.push_str(&format!(
-            "  [1/3] Symbol balance...                 {}\n",
-            if v.syntax_ok { "✓" } else { "✗ FAIL" }
-        ));
-        output.push_str(&format!(
-            "  [2/3] Anchor consistency...              {}\n",
-            if v.anchor_ok { "✓" } else { "⚠" }
-        ));
-        output.push_str(&format!(
-            "  [3/3] Tag-pair / id references...        {}\n",
-            if v.tag_pair_ok { "✓" } else { "⚠" }
-        ));
-
-        for e in &v.errors {
-            let hint = e.locate_hint.as_ref()
-                .map(|h| format!(" → locate \"{}\"" , h))
-                .unwrap_or_default();
-            output.push_str(&format!(
-                "  ✗ [error] line {}: {}{}\n",
-                e.line, e.message, hint
-            ));
         }
 
         for w in &v.warnings {

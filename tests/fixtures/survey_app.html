@@ -27,32 +27,11 @@ await page.evaluate(() => window.SurveyApp.loadFile(testFile));
 
 ## 5. Key Internal Modules
 
-| Name | Type | Line | Purpose |
-|------|------|------|---------|
-| `const SurveyMath` | js-const | 50 | Angle conversion & formatting |
-| `const DataFusion` | js-const | 80 | Station alias resolution, FS/BS pair fusion |
-| `function adjustTraverseFromData` | js-function | 120 | Unified Bowditch 7-step engine |
-| `function parseGsiData` | js-function | 160 | GSI file format parser |
-| `class TraverseRenderer` | js-class | 200 | Canvas-based traverse diagram renderer |
-
-## 6. File Navigation Index
-
-```
-start: <html>
-  start: <head>
-  end: </head>
-  start: <body>
-    start: <div id="app-container">
-      start: <div id="toolbar">
-      end: </div>
-      start: <div id="canvas-area">
-      end: </div>
-      start: <div id="alias-manager-modal">
-      end: </div>
-    end: </div>
-  end: </body>
-end: </html>
-```
+- `const SurveyMath` — Angle conversion & formatting
+- `const DataFusion` — Station alias resolution, FS/BS pair fusion
+- `function adjustTraverseFromData` — Unified Bowditch 7-step engine
+- `function parseGsiData` — GSI file format parser
+- `class TraverseRenderer` — Canvas-based traverse diagram renderer
 
     AI-SKILL-HEADER END -->
 <meta charset="UTF-8">

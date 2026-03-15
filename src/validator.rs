@@ -2,8 +2,6 @@ use anyhow::Result;
 use serde::Serialize;
 
 use crate::header;
-use crate::html_structure;
-use crate::js_scope;
 use crate::syntax_check::{self, CheckContext};
 
 #[derive(Debug, Serialize)]
@@ -41,41 +39,40 @@ pub struct SyntaxValidation {
 pub fn validate_file(content: &str, check_syntax_flag: bool) -> Result<ValidateResult> {
     let lines: Vec<&str> = content.lines().collect();
 
-    // Get header anchors
+    // Get header anchors + unparseable lines
     let header_info = header::extract_header(content).ok();
-    let header_anchors: Vec<String> = header_info
+    let (header_anchors, unparseable_lines): (Vec<String>, Vec<String>) = header_info
         .as_ref()
         .and_then(|h| h.sections.iter().find(|s| s.number == 5))
         .map(|s| {
-            header::parse_anchor_table(&s.content)
-                .into_iter()
-                .map(|a| a.name)
-                .collect()
+            let (entries, bad) = header::parse_anchor_list_with_issues(&s.content);
+            (entries.into_iter().map(|a| a.name).collect(), bad)
         })
         .unwrap_or_default();
 
-    // Get actual code declarations
-    let script_regions = header::find_script_regions(&lines);
-    let mut code_decls = Vec::new();
-    for (start, end) in &script_regions {
-        let region = &lines[*start..*end];
-        let decls = js_scope::extract_js_declarations(region);
-        for (name, _, rel_line) in decls {
-            code_decls.push((name, start + rel_line + 1));
-        }
+    // Get actual code-level block anchors (script blocks + HTML id elements)
+    let script_regions = header::find_script_regions_full(&lines);
+    let id_elements = header::find_html_id_elements(&lines);
+
+    let mut code_anchors: Vec<(String, usize)> = Vec::new();
+    for region in &script_regions {
+        code_anchors.push((region.tag_label.clone(), region.tag_line + 1));
+    }
+    for (_, line_idx, tag_label) in &id_elements {
+        code_anchors.push((tag_label.clone(), line_idx + 1));
     }
 
     // Anchor consistency
     let mut missing_from_code = Vec::new();
     for header_anchor in &header_anchors {
-        let found = code_decls.iter().any(|(name, _)| name == header_anchor);
+        let found = code_anchors.iter().any(|(name, _)| name == header_anchor);
         if !found {
             missing_from_code.push(header_anchor.clone());
         }
     }
 
     let mut missing_from_header = Vec::new();
-    for (name, line) in &code_decls {
+    for (name, line) in &code_anchors {
         let found = header_anchors.iter().any(|a| a == name);
         if !found {
             missing_from_header.push(MissingAnchor {
@@ -88,7 +85,12 @@ pub fn validate_file(content: &str, check_syntax_flag: bool) -> Result<ValidateR
     let found_in_code = header_anchors.len() - missing_from_code.len();
 
     // API consistency check (window.XXX)
-    let api_issues = check_api_consistency(content, &header_info);
+    let mut api_issues = check_api_consistency(content, &header_info);
+
+    // Report unparseable Section 5 lines
+    for bad_line in &unparseable_lines {
+        api_issues.push(format!("Section 5: unparseable entry: {}", bad_line));
+    }
 
     let anchor_consistency = AnchorConsistency {
         total_in_header: header_anchors.len(),
@@ -164,11 +166,11 @@ fn check_api_consistency(
 }
 
 fn validate_syntax(
-    content: &str,
+    _content: &str,
     header_info: &Option<header::HeaderInfo>,
 ) -> SyntaxValidation {
     let mut bracket_issues = Vec::new();
-    let mut id_issues = Vec::new();
+    let id_issues: Vec<String> = Vec::new();
 
     // Check header content syntax
     if let Some(info) = header_info {
@@ -178,24 +180,6 @@ fn validate_syntax(
                 "Line {} in header: {}",
                 issue.line, issue.message
             ));
-        }
-
-        // Check id references in Section 6 Tag-Pair Tree
-        if let Some(section6) = info.sections.iter().find(|s| s.number == 6) {
-            for line in section6.content.lines() {
-                if let Some(id_start) = line.find("id=\"") {
-                    let rest = &line[id_start + 4..];
-                    if let Some(id_end) = rest.find('"') {
-                        let id_val = &rest[..id_end];
-                        if !html_structure::id_exists(content, id_val) {
-                            id_issues.push(format!(
-                                "id=\"{}\" referenced in Tag-Pair Tree but not found in HTML",
-                                id_val
-                            ));
-                        }
-                    }
-                }
-            }
         }
     }
 

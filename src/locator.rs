@@ -28,7 +28,7 @@ pub fn locate_anchor(content: &str, anchor: &str, context_lines: usize) -> Resul
         .ok()
         .and_then(|h| {
             h.sections.iter().find(|s| s.number == 5).map(|s| {
-                header::parse_anchor_table(&s.content)
+                header::parse_anchor_list(&s.content)
             })
         })
         .unwrap_or_default();
@@ -112,15 +112,24 @@ pub fn locate_anchor(content: &str, anchor: &str, context_lines: usize) -> Resul
 
 fn find_similar_anchors(content: &str, query: &str) -> Vec<String> {
     let lines: Vec<&str> = content.lines().collect();
-    let script_regions = header::find_script_regions(&lines);
     let mut candidates = Vec::new();
 
-    for (start, end) in &script_regions {
-        let region = &lines[*start..*end];
-        let decls = js_scope::extract_js_declarations(region);
+    // Script block labels
+    let script_regions = header::find_script_regions_full(&lines);
+    for region in &script_regions {
+        candidates.push(region.tag_label.clone());
+        // Also add JS declarations inside as candidates
+        let region_lines = &lines[region.content_start..region.content_end];
+        let decls = js_scope::extract_js_declarations(region_lines);
         for (name, _, _) in decls {
             candidates.push(name);
         }
+    }
+
+    // HTML id elements
+    let id_elements = header::find_html_id_elements(&lines);
+    for (_, _, tag_label) in &id_elements {
+        candidates.push(tag_label.clone());
     }
 
     // Simple substring matching for suggestions
@@ -179,35 +188,43 @@ pub struct AnchorListEntry {
 
 pub fn list_anchors(content: &str) -> Vec<AnchorListEntry> {
     let lines: Vec<&str> = content.lines().collect();
-    let script_regions = header::find_script_regions(&lines);
 
     // Get header anchors
     let header_anchors: Vec<String> = header::extract_header(content)
         .ok()
         .and_then(|h| h.sections.into_iter().find(|s| s.number == 5))
         .map(|s| {
-            header::parse_anchor_table(&s.content)
+            header::parse_anchor_list(&s.content)
                 .into_iter()
                 .map(|a| a.name)
                 .collect()
         })
         .unwrap_or_default();
 
-    // Get actual code declarations
     let mut entries = Vec::new();
-    for (start, end) in &script_regions {
-        let region = &lines[*start..*end];
-        let decls = js_scope::extract_js_declarations(region);
-        for (name, decl_type, rel_line) in decls {
-            let abs_line = start + rel_line + 1; // 1-based
-            let in_header = header_anchors.iter().any(|a| *a == name);
-            entries.push(AnchorListEntry {
-                name,
-                line: abs_line,
-                anchor_type: decl_type.to_string(),
-                in_header,
-            });
-        }
+
+    // Script block anchors
+    let script_regions = header::find_script_regions_full(&lines);
+    for region in &script_regions {
+        let in_header = header_anchors.iter().any(|a| *a == region.tag_label);
+        entries.push(AnchorListEntry {
+            name: region.tag_label.clone(),
+            line: region.tag_line + 1,
+            anchor_type: "script-block".to_string(),
+            in_header,
+        });
+    }
+
+    // HTML element anchors (with id)
+    let id_elements = header::find_html_id_elements(&lines);
+    for (_id_val, line_idx, tag_label) in &id_elements {
+        let in_header = header_anchors.iter().any(|a| a == tag_label);
+        entries.push(AnchorListEntry {
+            name: tag_label.clone(),
+            line: line_idx + 1,
+            anchor_type: "html-element".to_string(),
+            in_header,
+        });
     }
 
     entries

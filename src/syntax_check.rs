@@ -1,4 +1,10 @@
 use serde::Serialize;
+use oxc_allocator::Allocator;
+use oxc_parser::Parser;
+use oxc_span::SourceType;
+use html5ever::parse_document;
+use html5ever::tendril::TendrilSink;
+use markup5ever_rcdom::{Handle, NodeData, RcDom};
 
 /// Result of a syntax/symbol balance check
 #[derive(Debug, Serialize)]
@@ -40,7 +46,7 @@ impl CheckContext {
     }
 }
 
-/// Perform symbol balance checking on text
+/// Perform syntax checking using oxc_parser (JS) and html5ever (HTML)
 pub fn check_syntax(text: &str, context: CheckContext) -> CheckResult {
     let lines: Vec<&str> = text.lines().collect();
     let input_bytes = text.len();
@@ -48,14 +54,17 @@ pub fn check_syntax(text: &str, context: CheckContext) -> CheckResult {
     let mut issues = Vec::new();
 
     match context {
-        CheckContext::Js => check_js_balance(text, &lines, &mut issues),
-        CheckContext::Html => check_html_balance(text, &lines, &mut issues),
+        CheckContext::Js => check_js_with_oxc(text, &mut issues),
+        CheckContext::Html => {
+            // For full HTML: extract <script> contents and validate with oxc,
+            // then validate HTML structure with html5ever
+            check_html_with_parsers(text, &lines, &mut issues);
+        }
         CheckContext::Header => {
-            check_bracket_balance(text, &lines, &mut issues);
             check_markdown_table_integrity(&lines, &mut issues);
         }
         CheckContext::Cli => {
-            check_bracket_balance(text, &lines, &mut issues);
+            check_js_with_oxc(text, &mut issues);
         }
     }
 
@@ -67,12 +76,11 @@ pub fn check_syntax(text: &str, context: CheckContext) -> CheckResult {
         "No issues found — output is safe to use".to_string()
     } else {
         format!(
-            "{} error{}, {} warning{} — output is {}safe to apply",
+            "{} error{}, {} warning{} — review before applying",
             errors,
             if errors != 1 { "s" } else { "" },
             warnings,
             if warnings != 1 { "s" } else { "" },
-            if balanced { "" } else { "NOT " }
         )
     };
 
@@ -85,303 +93,177 @@ pub fn check_syntax(text: &str, context: CheckContext) -> CheckResult {
     }
 }
 
-fn check_bracket_balance(text: &str, lines: &[&str], issues: &mut Vec<Issue>) {
-    let pairs = [('(', ')'), ('[', ']'), ('{', '}')];
+/// Validate JavaScript using oxc_parser AST
+fn check_js_with_oxc(js_text: &str, issues: &mut Vec<Issue>) {
+    let allocator = Allocator::default();
+    let source_type = SourceType::from_path("check.js")
+        .unwrap_or_default()
+        .with_module(true);
+    let ret = Parser::new(&allocator, js_text, source_type).parse();
 
-    for &(open, close) in &pairs {
-        let mut stack: Vec<(usize, usize)> = Vec::new(); // (line, col)
-        let mut in_string = false;
-        let mut string_char = '"';
-
-        for (line_idx, line) in lines.iter().enumerate() {
-            let chars: Vec<char> = line.chars().collect();
-            let mut i = 0;
-            while i < chars.len() {
-                let ch = chars[i];
-
-                // Handle string literals
-                if !in_string && (ch == '"' || ch == '\'') {
-                    in_string = true;
-                    string_char = ch;
-                    i += 1;
-                    continue;
-                }
-                if in_string {
-                    if ch == '\\' {
-                        i += 2;
-                        continue;
-                    }
-                    if ch == string_char {
-                        in_string = false;
-                    }
-                    i += 1;
-                    continue;
-                }
-
-                if ch == open {
-                    stack.push((line_idx + 1, i + 1));
-                } else if ch == close {
-                    if stack.pop().is_none() {
-                        issues.push(Issue {
-                            severity: "error".to_string(),
-                            line: line_idx + 1,
-                            column: i + 1,
-                            message: format!("Unmatched `{}` — no opening `{}`", close, open),
-                            context_snippet: Some(line.to_string()),
-                        });
-                    }
-                }
-                i += 1;
-            }
-        }
-
-        for (line, col) in stack {
-            let snippet = lines.get(line - 1).map(|s| s.to_string());
-            issues.push(Issue {
-                severity: "error".to_string(),
-                line,
-                column: col,
-                message: format!("Unclosed `{}` opened at line {} — expected `{}` before EOF", open, line, close),
-                context_snippet: snippet,
-            });
-        }
-    }
-
-    // Check quote balance (simple heuristic — count per line)
-    let _ = text; // suppress unused warning
-}
-
-fn check_js_balance(text: &str, lines: &[&str], issues: &mut Vec<Issue>) {
-    // Track { } ( ) [ ] with awareness of strings, comments, template literals
-    let mut brace_stack: Vec<(char, usize, usize)> = Vec::new(); // (char, line, col)
-    let mut in_single_line_comment = false;
-    let mut in_multi_line_comment = false;
-    let mut in_string = false;
-    let mut string_char = '"';
-    let mut in_template_literal = false;
-
-    let _ = text;
-
-    for (line_idx, line) in lines.iter().enumerate() {
-        let chars: Vec<char> = line.chars().collect();
-        let mut i = 0;
-        in_single_line_comment = false;
-
-        while i < chars.len() {
-            let ch = chars[i];
-            let next = chars.get(i + 1).copied();
-
-            // Multi-line comment end
-            if in_multi_line_comment {
-                if ch == '*' && next == Some('/') {
-                    in_multi_line_comment = false;
-                    i += 2;
-                    continue;
-                }
-                i += 1;
-                continue;
-            }
-
-            // Single-line comment
-            if in_single_line_comment {
-                break;
-            }
-
-            // Template literal
-            if in_template_literal {
-                if ch == '\\' {
-                    i += 2;
-                    continue;
-                }
-                if ch == '`' {
-                    in_template_literal = false;
-                }
-                i += 1;
-                continue;
-            }
-
-            // String literals
-            if in_string {
-                if ch == '\\' {
-                    i += 2;
-                    continue;
-                }
-                if ch == string_char {
-                    in_string = false;
-                }
-                i += 1;
-                continue;
-            }
-
-            // Start of comment
-            if ch == '/' && next == Some('/') {
-                in_single_line_comment = true;
-                break;
-            }
-            if ch == '/' && next == Some('*') {
-                in_multi_line_comment = true;
-                i += 2;
-                continue;
-            }
-
-            // Start of string
-            if ch == '\'' || ch == '"' {
-                in_string = true;
-                string_char = ch;
-                i += 1;
-                continue;
-            }
-            if ch == '`' {
-                in_template_literal = true;
-                i += 1;
-                continue;
-            }
-
-            // Bracket tracking
-            match ch {
-                '{' | '(' | '[' => {
-                    brace_stack.push((ch, line_idx + 1, i + 1));
-                }
-                '}' | ')' | ']' => {
-                    let expected = match ch {
-                        '}' => '{',
-                        ')' => '(',
-                        ']' => '[',
-                        _ => unreachable!(),
-                    };
-                    if let Some(&(top, _, _)) = brace_stack.last() {
-                        if top == expected {
-                            brace_stack.pop();
-                        } else {
-                            issues.push(Issue {
-                                severity: "error".to_string(),
-                                line: line_idx + 1,
-                                column: i + 1,
-                                message: format!(
-                                    "Mismatched `{}` — expected `{}` to close `{}` opened at line {}",
-                                    ch,
-                                    match top { '{' => '}', '(' => ')', '[' => ']', _ => '?' },
-                                    top,
-                                    brace_stack.last().map(|s| s.1).unwrap_or(0)
-                                ),
-                                context_snippet: Some(line.to_string()),
-                            });
-                        }
-                    } else {
-                        issues.push(Issue {
-                            severity: "error".to_string(),
-                            line: line_idx + 1,
-                            column: i + 1,
-                            message: format!("Unmatched `{}` — no opening bracket", ch),
-                            context_snippet: Some(line.to_string()),
-                        });
-                    }
-                }
-                _ => {}
-            }
-
-            i += 1;
-        }
-    }
-
-    for (ch, line, col) in brace_stack {
-        let close = match ch {
-            '{' => '}',
-            '(' => ')',
-            '[' => ']',
-            _ => '?',
-        };
-        let snippet = lines.get(line - 1).map(|s| s.to_string());
+    for error in ret.errors {
+        let msg = format!("{}", error);
+        // Extract line info from the error message or default to line 0
+        let (line, col) = extract_line_col_from_error(&msg, js_text);
         issues.push(Issue {
-            severity: "error".to_string(),
+            severity: "warning".to_string(),
             line,
             column: col,
-            message: format!("Unclosed `{}` opened at line {} — expected `{}` before EOF", ch, line, close),
-            context_snippet: snippet,
+            message: msg,
+            context_snippet: js_text.lines().nth(line.saturating_sub(1)).map(|s| s.to_string()),
         });
     }
 }
 
-fn check_html_balance(_text: &str, lines: &[&str], issues: &mut Vec<Issue>) {
-    // Simple HTML tag balance checker
-    let mut tag_stack: Vec<(String, usize)> = Vec::new(); // (tag_name, line)
-    let void_elements = [
-        "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param",
-        "source", "track", "wbr",
-    ];
+/// Validate full HTML document: html5ever for structure, oxc_parser for embedded JS
+fn check_html_with_parsers(html: &str, lines: &[&str], issues: &mut Vec<Issue>) {
+    // 1. Parse HTML with html5ever to check structure
+    check_html_structure(html, lines, issues);
 
-    for (line_idx, line) in lines.iter().enumerate() {
-        let mut pos = 0;
-        let bytes = line.as_bytes();
+    // 2. Extract <script> blocks and validate JS inside them
+    let mut in_script = false;
+    let mut script_start: usize = 0;
+    let mut script_content = String::new();
 
-        while pos < bytes.len() {
-            if bytes[pos] == b'<' {
-                // Check for comment
-                if line[pos..].starts_with("<!--") {
-                    if let Some(end) = line[pos..].find("-->") {
-                        pos += end + 3;
-                        continue;
-                    }
-                    break; // Multi-line comment, skip rest
-                }
-
-                let is_closing = pos + 1 < bytes.len() && bytes[pos + 1] == b'/';
-                let start = if is_closing { pos + 2 } else { pos + 1 };
-
-                // Extract tag name
-                let mut end = start;
-                while end < bytes.len() && bytes[end] != b' ' && bytes[end] != b'>' && bytes[end] != b'/' {
-                    end += 1;
-                }
-                let tag_name = line[start..end].to_lowercase();
-
-                if tag_name.is_empty() || tag_name.starts_with('!') {
-                    pos = end;
-                    continue;
-                }
-
-                // Find the closing >
-                while pos < bytes.len() && bytes[pos] != b'>' {
-                    pos += 1;
-                }
-
-                // Self-closing check
-                let is_self_closing = pos > 0 && bytes[pos - 1] == b'/';
-
-                if void_elements.contains(&tag_name.as_str()) || is_self_closing {
-                    // Skip void and self-closing elements
-                } else if is_closing {
-                    // Closing tag
-                    if let Some(idx) = tag_stack.iter().rposition(|(name, _)| *name == tag_name) {
-                        tag_stack.truncate(idx);
-                    } else {
-                        issues.push(Issue {
-                            severity: "error".to_string(),
-                            line: line_idx + 1,
-                            column: start,
-                            message: format!("Closing tag `</{}>` has no matching opening tag", tag_name),
-                            context_snippet: Some(line.to_string()),
-                        });
-                    }
-                } else {
-                    // Opening tag
-                    tag_stack.push((tag_name, line_idx + 1));
+    for (idx, line) in lines.iter().enumerate() {
+        let trimmed = line.trim().to_lowercase();
+        if !in_script && trimmed.contains("<script") && trimmed.contains('>') {
+            in_script = true;
+            script_start = idx + 1;
+            // Capture text after <script...> on the same line
+            if let Some(pos) = line.to_lowercase().find('>') {
+                let after = &line[pos + 1..];
+                if !after.trim().is_empty() {
+                    script_content.push_str(after);
+                    script_content.push('\n');
                 }
             }
-            pos += 1;
+            continue;
+        }
+        if in_script && trimmed.contains("</script") {
+            // Validate the accumulated JS content
+            if !script_content.trim().is_empty() {
+                let allocator = Allocator::default();
+                let source_type = SourceType::from_path("inline.js")
+                    .unwrap_or_default()
+                    .with_module(true);
+                let ret = Parser::new(&allocator, &script_content, source_type).parse();
+                for error in ret.errors {
+                    let msg = format!("{}", error);
+                    let (err_line, col) = extract_line_col_from_error(&msg, &script_content);
+                    let absolute_line = script_start + err_line.saturating_sub(1);
+                    issues.push(Issue {
+                        severity: "warning".to_string(),
+                        line: absolute_line,
+                        column: col,
+                        message: format!("JS syntax: {}", msg),
+                        context_snippet: lines.get(absolute_line.saturating_sub(1)).map(|s| s.to_string()),
+                    });
+                }
+            }
+            in_script = false;
+            script_content.clear();
+            continue;
+        }
+        if in_script {
+            script_content.push_str(line);
+            script_content.push('\n');
         }
     }
+}
 
-    for (tag, line) in tag_stack {
-        let snippet = lines.get(line - 1).map(|s| s.to_string());
+/// Check HTML structure using html5ever DOM parsing
+fn check_html_structure(html: &str, lines: &[&str], issues: &mut Vec<Issue>) {
+    let dom = parse_document(RcDom::default(), Default::default())
+        .from_utf8()
+        .read_from(&mut html.as_bytes())
+        .unwrap_or_else(|_| RcDom::default());
+
+    // html5ever is error-recovering — collect its parse errors
+    for err in &dom.errors {
+        let msg = format!("{}", err);
+        // Try to find the relevant line
+        let line = find_error_line(lines, &msg);
         issues.push(Issue {
-            severity: "error".to_string(),
+            severity: "warning".to_string(),
             line,
-            column: 1,
-            message: format!("Unclosed `<{}>` opened at line {} — no `</{}>` found", tag, line, tag),
-            context_snippet: snippet,
+            column: 0,
+            message: format!("HTML parse: {}", msg),
+            context_snippet: lines.get(line.saturating_sub(1)).map(|s| s.to_string()),
         });
     }
+
+    // Check for unclosed significant elements by walking the DOM
+    check_dom_completeness(&dom.document, lines, issues);
+}
+
+/// Walk DOM to detect issues like unclosed elements
+fn check_dom_completeness(node: &Handle, lines: &[&str], issues: &mut Vec<Issue>) {
+    let children = node.children.borrow();
+    for child in children.iter() {
+        if let NodeData::Element { ref name, .. } = child.data {
+            let tag = name.local.to_string();
+            // Check if a significant element has both opening and closing tags
+            // html5ever auto-closes, so we verify by looking at source lines
+            let void_elements = [
+                "area", "base", "br", "col", "embed", "hr", "img", "input",
+                "link", "meta", "param", "source", "track", "wbr",
+            ];
+            if !void_elements.contains(&tag.as_str()) {
+                let has_open = lines.iter().any(|l| {
+                    let lower = l.to_lowercase();
+                    lower.contains(&format!("<{}", tag)) && !lower.contains(&format!("</{}", tag))
+                });
+                let has_close = lines.iter().any(|l| l.to_lowercase().contains(&format!("</{}>", tag)));
+                if has_open && !has_close && !["html", "head", "body"].contains(&tag.as_str()) {
+                    let line = lines.iter().position(|l| l.to_lowercase().contains(&format!("<{}", tag)))
+                        .map(|i| i + 1).unwrap_or(0);
+                    issues.push(Issue {
+                        severity: "warning".to_string(),
+                        line,
+                        column: 0,
+                        message: format!("HTML: `<{}>` has no matching `</{}>` in source", tag, tag),
+                        context_snippet: lines.get(line.saturating_sub(1)).map(|s| s.to_string()),
+                    });
+                }
+            }
+        }
+        check_dom_completeness(child, lines, issues);
+    }
+}
+
+/// Extract line/column from an oxc error message (format: "filename:line:col ...")
+fn extract_line_col_from_error(msg: &str, source: &str) -> (usize, usize) {
+    // oxc errors typically contain offset info; fall back to line 1
+    // Try to find a pattern like ": something at offset N"
+    let _ = source;
+    // Simple heuristic: look for line:col pattern
+    let parts: Vec<&str> = msg.splitn(4, ':').collect();
+    if parts.len() >= 3 {
+        if let (Ok(line), Ok(col)) = (parts[1].trim().parse::<usize>(), parts[2].trim().parse::<usize>()) {
+            if line > 0 {
+                return (line, col);
+            }
+        }
+    }
+    (1, 0)
+}
+
+/// Try to match an error message to a source line
+fn find_error_line(lines: &[&str], error_msg: &str) -> usize {
+    // html5ever errors don't always have line info, try basic matching
+    let lower = error_msg.to_lowercase();
+    if let Some(tag_start) = lower.find('<') {
+        if let Some(tag_end) = lower[tag_start..].find('>') {
+            let tag_ref = &error_msg[tag_start..tag_start + tag_end + 1];
+            for (i, line) in lines.iter().enumerate() {
+                if line.to_lowercase().contains(&tag_ref.to_lowercase()) {
+                    return i + 1;
+                }
+            }
+        }
+    }
+    0
 }
 
 fn check_markdown_table_integrity(lines: &[&str], issues: &mut Vec<Issue>) {

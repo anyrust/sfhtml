@@ -84,12 +84,11 @@ fn test_anchor_list() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let anchors: Vec<serde_json::Value> = serde_json::from_str(&stdout).expect("Invalid JSON");
 
-    // Should find SurveyMath, DataFusion, adjustTraverseFromData, parseGsiData, TraverseRenderer
-    assert!(anchors.len() >= 4, "Expected at least 4 anchors, got {}", anchors.len());
+    // Should find script blocks and HTML elements with id
+    assert!(anchors.len() >= 2, "Expected at least 2 anchors, got {}", anchors.len());
 
     // Check types
     let types: Vec<&str> = anchors.iter().map(|a| a["type"].as_str().unwrap()).collect();
-    assert!(types.contains(&"js-const"));
-    assert!(types.contains(&"js-function"));
-    assert!(types.contains(&"js-class"));
+    assert!(types.contains(&"script-block"));
+    assert!(types.contains(&"html-element"));
 }

@@ -20,6 +20,7 @@ pub struct CdpClient {
 pub struct BrowserProcess {
     pub child: Child,
     pub ws_url: String,
+    #[allow(dead_code)]
     pub port: u16,
 }
 
@@ -172,6 +173,7 @@ pub fn connect_to_port(port: u16) -> Result<String> {
 }
 
 /// Get a list of all open pages/tabs on the given CDP port.
+#[allow(dead_code)]
 pub fn list_targets(port: u16) -> Result<Vec<Value>> {
     let addr = format!("127.0.0.1:{}", port);
     let mut stream = TcpStream::connect_timeout(
@@ -519,6 +521,7 @@ impl CdpClient {
     }
 
     /// Navigate to a URL.
+    #[allow(dead_code)]
     pub fn navigate(&mut self, url: &str) -> Result<Value> {
         self.send("Page.navigate", json!({ "url": url }))
     }

@@ -1,0 +1,12 @@
+mod scan_test;
+mod search_test;
+mod header_test;
+mod locate_test;
+mod apply_test;
+mod diff_test;
+mod validate_test;
+mod create_test;
+mod save_as_test;
+mod history_test;
+mod module_test;
+mod page_test;

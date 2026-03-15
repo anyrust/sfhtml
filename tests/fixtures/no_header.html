@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Legacy Measurement Tool</title>
+    <style>
+        body { font-family: monospace; }
+        .container { max-width: 800px; margin: 0 auto; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Legacy Measurement Tool</h1>
+        <p>This is a legacy tool without an AI-SKILL-HEADER.</p>
+        <input type="text" id="measurement-input" placeholder="Enter measurement">
+        <button onclick="calculate()">Calculate</button>
+        <div id="result"></div>
+    </div>
+    <script>
+    function calculate() {
+        const input = document.getElementById('measurement-input').value;
+        const result = parseFloat(input) * 2.54;
+        document.getElementById('result').textContent = `Result: ${result} cm`;
+    }
+
+    function resetForm() {
+        document.getElementById('measurement-input').value = '';
+        document.getElementById('result').textContent = '';
+    }
+    </script>
+</body>
+</html>

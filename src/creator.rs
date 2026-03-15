@@ -1,0 +1,146 @@
+use anyhow::{bail, Result};
+use std::path::Path;
+
+/// Create a new HTML file at the given path
+pub fn create_html(
+    path: &Path,
+    title: &str,
+    with_header: bool,
+    force: bool,
+) -> Result<()> {
+    if path.exists() && !force {
+        bail!(
+            "File already exists: {}. Use --force to overwrite.",
+            path.display()
+        );
+    }
+
+    // Ensure parent directory exists
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+
+    let content = if with_header {
+        generate_html_with_header(title)
+    } else {
+        generate_html(title)
+    };
+
+    std::fs::write(path, &content)?;
+    Ok(())
+}
+
+/// Save file to a new location, optionally injecting an AI-SKILL-HEADER
+pub fn save_as(
+    source: &Path,
+    dest: &Path,
+    inject_header: bool,
+    force: bool,
+) -> Result<()> {
+    if !source.exists() {
+        bail!("Source file not found: {}", source.display());
+    }
+    if dest.exists() && !force {
+        bail!(
+            "Destination already exists: {}. Use --force to overwrite.",
+            dest.display()
+        );
+    }
+
+    if let Some(parent) = dest.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+
+    let content = std::fs::read_to_string(source)?;
+
+    let output = if inject_header && !content.contains("<!-- AI-SKILL-HEADER START") {
+        crate::header::generate_init_header(&content)?
+    } else {
+        content
+    };
+
+    std::fs::write(dest, &output)?;
+    Ok(())
+}
+
+fn generate_html(title: &str) -> String {
+    format!(
+        r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{title}</title>
+    <style>
+        body {{ font-family: sans-serif; margin: 20px; }}
+    </style>
+</head>
+<body>
+    <h1>{title}</h1>
+    <script>
+    // Application code
+    </script>
+</body>
+</html>
+"#
+    )
+}
+
+fn generate_html_with_header(title: &str) -> String {
+    format!(
+        r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{title}</title>
+<!-- AI-SKILL-HEADER START
+# {title} — (feature summary)
+
+## 1. Overview
+(App description, deployment method)
+
+## 2. Public JavaScript API
+(Functions exposed on window, parameters, return values, side effects)
+
+## 3. Automation Example
+(Puppeteer / Playwright examples)
+
+## 4. Conventions
+(Units, angle formats, state management rules)
+
+## 5. Key Internal Modules
+
+| Name | Type | Line | Purpose |
+|------|------|------|---------|
+
+## 6. File Navigation Index
+
+```
+<html>
+  <head>
+  </head>
+  <body>
+  </body>
+</html>
+```
+
+    AI-SKILL-HEADER END -->
+    <style>
+        body {{ font-family: sans-serif; margin: 20px; }}
+    </style>
+</head>
+<body>
+    <h1>{title}</h1>
+    <script>
+    // Application code
+    </script>
+</body>
+</html>
+"#
+    )
+}

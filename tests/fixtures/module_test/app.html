@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Module Test App</title>
+    <link rel="stylesheet" href="./styles/theme.css">
+    <style>
+        @import url('./styles/base.css');
+        body { margin: 0; }
+    </style>
+</head>
+<body>
+    <h1>Module Test</h1>
+    <iframe src="./components/widget.html"></iframe>
+    <script type="module">
+        import { DataStore } from './modules/store.js';
+        import { render } from './modules/renderer.js';
+        import './modules/polyfill.js';
+        import { helper } from '../shared/utils.js';
+
+        const app = new DataStore();
+        render(app);
+    </script>
+    <script src="./legacy/old-lib.js"></script>
+    <script>
+        // dynamic import
+        const mod = await import('./modules/lazy.js');
+    </script>
+</body>
+</html>

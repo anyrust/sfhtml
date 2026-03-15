@@ -1,0 +1,33 @@
+[package]
+name = "sfhtml"
+version = "0.1.0"
+edition = "2021"
+description = "Single-File HTML AI-Skill CLI — scan, read, edit, validate, and interact with single-file HTML apps"
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/anthropic-ai/sfhtml"
+homepage = "https://github.com/anthropic-ai/sfhtml"
+keywords = ["html", "single-file", "ai", "cli", "editor"]
+categories = ["command-line-utilities", "web-programming"]
+exclude = ["tests/", "target/"]
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+memchr = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+memmap2 = "0.9"
+similar = "2"
+tempfile = "3"
+walkdir = "2"
+rayon = "1"
+crossbeam-channel = "0.5"
+num_cpus = "1"
+anyhow = "1"
+tungstenite = "0.21"
+base64 = "0.22"
+
+[profile.release]
+lto = true
+strip = true
+opt-level = 3

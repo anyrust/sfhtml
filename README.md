@@ -15,7 +15,7 @@ cargo install sfhtml
 
 ### From source
 ```bash
-git clone https://github.com/anthropic-ai/sfhtml.git
+git clone https://github.com/anyrust/sfhtml.git
 cd sfhtml
 cargo build --release
 # Binary at target/release/sfhtml (~2 MB)

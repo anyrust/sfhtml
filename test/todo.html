@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<!-- AI-SKILL-HEADER START
+# TodoApp — Minimal task manager
+
+## 1. Overview
+A lightweight single-file todo application with localStorage persistence,
+drag-and-drop reordering, and dark/light theme toggle.
+
+## 2. Public JavaScript API
+- window.addTask(text): add a new task, returns task id
+- window.removeTask(id): remove task by id
+- window.toggleTheme(): switch between dark and light mode
+- window.getTasks(): returns array of {id, text, done} objects
+- window.clearCompleted(): remove all completed tasks
+
+## 3. Automation Example
+await page.goto('file:///path/to/todo.html');
+await page.evaluate(() => window.addTask('Buy groceries'));
+await page.click('.task-item:first-child .toggle');
+await page.screenshot({path: 'todo.png'});
+
+## 4. Conventions
+- Tasks stored in localStorage key "todo-tasks"
+- IDs are timestamp-based integers
+- Theme preference saved in localStorage "todo-theme"
+
+## 5. Key Internal Modules
+
+- `<script>`
+- `<div id="app">`
+- `<ul id="task-list">`
+- `<input id="new-task">`
+- `<div id="app">`
+- `<div id="stats">`
+- `<input id="new-task">`
+- `<button id="add-btn">`
+- `<ul id="task-list">`
+- `<li id="' + t.id + '">`
+
+    AI-SKILL-HEADER END -->
+    <meta charset="UTF-8">
+    <title>TodoApp</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: system-ui, sans-serif; min-height: 100vh; transition: background 0.3s, color 0.3s; }
+        body.dark { background: #1a1a2e; color: #e0e0e0; }
+        body.light { background: #f5f5f5; color: #333; }
+        #app { max-width: 500px; margin: 40px auto; padding: 20px; }
+        h1 { text-align: center; margin-bottom: 20px; font-size: 2rem; }
+        .input-row { display: flex; gap: 8px; margin-bottom: 20px; }
+        #new-task {
+            flex: 1; padding: 10px 14px; border: 2px solid #555; border-radius: 6px;
+            font-size: 1rem; background: transparent; color: inherit;
+        }
+        .btn { padding: 10px 20px; border: none; border-radius: 6px; cursor: pointer; font-size: 0.9rem; font-weight: 600; }
+        .btn-add { background: #6c5ce7; color: white; }
+        .btn-add:hover { background: #5a4bd1; }
+        .btn-theme { background: #00b894; color: white; font-size: 0.8rem; padding: 6px 12px; }
+        .btn-clear { background: #d63031; color: white; font-size: 0.8rem; padding: 6px 12px; }
+        .toolbar { display: flex; justify-content: space-between; margin-bottom: 16px; }
+        .stats { font-size: 0.85rem; color: #888; }
+        #task-list { list-style: none; }
+        .task-item {
+            display: flex; align-items: center; gap: 12px; padding: 12px;
+            margin-bottom: 6px; border-radius: 6px; transition: background 0.2s;
+        }
+        body.dark .task-item { background: #16213e; }
+        body.light .task-item { background: white; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+        .task-item:hover { opacity: 0.9; }
+        .toggle { width: 20px; height: 20px; border-radius: 50%; border: 2px solid #6c5ce7; cursor: pointer; background: transparent; }
+        .toggle.done { background: #6c5ce7; }
+        .task-text { flex: 1; font-size: 0.95rem; }
+        .task-text.done { text-decoration: line-through; opacity: 0.5; }
+        .delete-btn { background: none; border: none; color: #d63031; cursor: pointer; font-size: 1.2rem; opacity: 0.5; }
+        .delete-btn:hover { opacity: 1; }
+        .footer { text-align: center; margin-top: 24px; font-size: 0.75rem; color: #888; }
+    </style>
+</head>
+<body class="dark">
+    <div id="app">
+        <h1>📝 Todo App</h1>
+        <div class="toolbar">
+            <div class="stats" id="stats">0 tasks</div>
+            <div>
+                <button class="btn btn-theme" onclick="window.toggleTheme()">🌓 Theme</button>
+                <button class="btn btn-clear" onclick="window.clearCompleted()">Clear Done</button>
+            </div>
+        </div>
+        <div class="input-row">
+            <input id="new-task" type="text" placeholder="What needs to be done?" autofocus>
+            <button class="btn btn-add" id="add-btn">Add</button>
+        </div>
+        <ul id="task-list"></ul>
+        <div class="footer">Built with sfhtml — single-file HTML</div>
+    </div>
+
+    <script>
+    (function() {
+        "use strict";
+        var tasks = JSON.parse(localStorage.getItem("todo-tasks") || "[]");
+
+        function saveTasks() {
+            localStorage.setItem("todo-tasks", JSON.stringify(tasks));
+        }
+
+        function render() {
+            var list = document.getElementById("task-list");
+            list.innerHTML = tasks.map(function(t) {
+                return '<li class="task-item" draggable="true" data-id="' + t.id + '">' +
+                    '<button class="toggle ' + (t.done ? "done" : "") + '" onclick="window._toggle(' + t.id + ')"></button>' +
+                    '<span class="task-text ' + (t.done ? "done" : "") + '">' + t.text + '</span>' +
+                    '<button class="delete-btn" onclick="window.removeTask(' + t.id + ')">&times;</button></li>';
+            }).join("");
+            var done = tasks.filter(function(t) { return t.done; }).length;
+            document.getElementById("stats").textContent = tasks.length + " tasks, " + done + " done";
+        }
+
+        window.addTask = function(text) {
+            if (!text || !text.trim()) return null;
+            var id = Date.now();
+            tasks.push({ id: id, text: text.trim(), done: false });
+            saveTasks(); render();
+            return id;
+        };
+
+        window.removeTask = function(id) {
+            tasks = tasks.filter(function(t) { return t.id !== id; });
+            saveTasks(); render();
+        };
+
+        window._toggle = function(id) {
+            tasks.forEach(function(t) { if (t.id === id) t.done = !t.done; });
+            saveTasks(); render();
+        };
+
+        window.toggleTheme = function() {
+            var body = document.body;
+            var isDark = body.classList.contains("dark");
+            body.className = isDark ? "light" : "dark";
+            localStorage.setItem("todo-theme", isDark ? "light" : "dark");
+        };
+
+        window.getTasks = function() { return tasks.slice(); };
+
+        window.clearCompleted = function() {
+            tasks = tasks.filter(function(t) { return !t.done; });
+            saveTasks(); render();
+        };
+
+        /* Input handling */
+        document.getElementById("new-task").addEventListener("keydown", function(e) {
+            if (e.key === "Enter") { window.addTask(this.value); this.value = ""; }
+        });
+        document.getElementById("add-btn").addEventListener("click", function() {
+            var input = document.getElementById("new-task");
+            window.addTask(input.value); input.value = "";
+        });
+
+        /* Init theme */
+        var savedTheme = localStorage.getItem("todo-theme");
+        if (savedTheme) document.body.className = savedTheme;
+
+        render();
+    })();
+    </script>
+</body>
+</html>

@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<!-- AI-SKILL-HEADER START
+# Dashboard — Sales analytics dashboard
+
+## 1. Overview
+Single-file analytics dashboard with interactive charts, data table,
+and KPI cards. Uses Canvas API for charts, no external dependencies.
+
+## 2. Public JavaScript API
+- window.dashData: current dataset array
+- window.setDateRange(start, end): filter data by date range
+- window.exportCSV(): download current view as CSV
+- window.chartType: current chart type ("bar" | "line" | "pie")
+
+## 3. Automation Example
+await page.goto('file:///path/to/dashboard.html');
+await page.evaluate(() => window.setDateRange('2025-01-01','2025-12-31'));
+await page.screenshot({path: 'dashboard.png'});
+
+## 4. Conventions
+- Currency in USD, dates in ISO format
+- Chart auto-resizes on window resize
+- Data refreshes on setDateRange() call
+
+## 5. Key Internal Modules
+- `<script type="module">` — App entry: initDashboard, bindEvents, state
+- `<div id="dashboard">` — Main layout with sidebar and content area
+- `<canvas id="mainChart">` — Primary chart canvas
+- `<div id="kpi-row">` — KPI summary cards
+- `<table id="data-table">` — Sortable data table
+- `function initDashboard` — Bootstrap: loads data, binds events, first render
+- `function drawChart` — Renders bar/line/pie chart on canvas
+- `class DataManager` — Fetches, caches, and normalizes sales data
+
+AI-SKILL-HEADER END -->
+    <meta charset="UTF-8">
+    <title>Sales Dashboard</title>
+    <link rel="stylesheet" href="./styles/base.css">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: system-ui, sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; }
+        #dashboard { display: grid; grid-template-columns: 200px 1fr; min-height: 100vh; }
+        .sidebar { background: #1e293b; padding: 20px; border-right: 1px solid #334155; }
+        .sidebar h2 { font-size: 1.1rem; margin-bottom: 20px; color: #60a5fa; }
+        .nav-item { padding: 10px; margin: 4px 0; border-radius: 6px; cursor: pointer; font-size: 0.85rem; }
+        .nav-item:hover, .nav-item.active { background: #334155; }
+        .content { padding: 24px; }
+        .content h1 { font-size: 1.3rem; margin-bottom: 16px; }
+        #kpi-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 20px; }
+        .kpi-card { background: #1e293b; padding: 16px; border-radius: 8px; text-align: center; }
+        .kpi-label { font-size: 0.75rem; color: #94a3b8; }
+        .kpi-value { font-size: 1.5rem; font-weight: 700; margin-top: 4px; }
+        .chart-container { background: #1e293b; border-radius: 8px; padding: 16px; margin-bottom: 20px; }
+        #mainChart { width: 100%; height: 300px; }
+        #data-table { width: 100%; border-collapse: collapse; background: #1e293b; border-radius: 8px; overflow: hidden; }
+        #data-table th { padding: 10px; text-align: left; font-size: 0.75rem; color: #94a3b8; border-bottom: 1px solid #334155; }
+        #data-table td { padding: 10px; font-size: 0.85rem; border-bottom: 1px solid #1e293b; }
+    </style>
+</head>
+<body>
+    <div id="dashboard">
+        <div class="sidebar">
+            <h2>📊 Analytics</h2>
+            <div class="nav-item active">Overview</div>
+            <div class="nav-item">Revenue</div>
+            <div class="nav-item">Customers</div>
+            <div class="nav-item">Products</div>
+            <div class="nav-item">Settings</div>
+        </div>
+        <div class="content">
+            <h1>Sales Overview</h1>
+            <div id="kpi-row"></div>
+            <div class="chart-container">
+                <canvas id="mainChart"></canvas>
+            </div>
+            <table id="data-table">
+                <thead><tr><th>Region</th><th>Revenue</th><th>Units</th><th>Growth</th></tr></thead>
+                <tbody id="tableBody"></tbody>
+            </table>
+        </div>
+    </div>
+
+    <script type="module">
+        class DataManager {
+            constructor() {
+                this.data = [
+                    { region: "North America", revenue: 245000, units: 1820, growth: 12.5 },
+                    { region: "Europe", revenue: 198000, units: 1540, growth: 8.3 },
+                    { region: "Asia Pacific", revenue: 312000, units: 2100, growth: 22.1 },
+                    { region: "Latin America", revenue: 87000, units: 640, growth: 15.7 },
+                    { region: "Middle East", revenue: 56000, units: 380, growth: 9.8 }
+                ];
+            }
+            getData() { return this.data; }
+            getTotal(field) { return this.data.reduce((s, r) => s + r[field], 0); }
+        }
+
+        const dm = new DataManager();
+        window.dashData = dm.getData();
+        window.chartType = "bar";
+
+        function drawChart(canvas, data) {
+            const ctx = canvas.getContext("2d");
+            const dpr = window.devicePixelRatio || 1;
+            const rect = canvas.getBoundingClientRect();
+            canvas.width = rect.width * dpr;
+            canvas.height = 300 * dpr;
+            ctx.scale(dpr, dpr);
+            const W = rect.width, H = 300, pad = 50;
+            ctx.clearRect(0, 0, W, H);
+
+            const maxR = Math.max(...data.map(d => d.revenue));
+            const barW = (W - pad * 2) / data.length;
+            const colors = ["#60a5fa", "#34d399", "#f472b6", "#fbbf24", "#a78bfa"];
+
+            data.forEach((d, i) => {
+                const h = (d.revenue / maxR) * (H - pad * 2);
+                const x = pad + i * barW + barW * 0.1;
+                const y = H - pad - h;
+                ctx.fillStyle = colors[i % colors.length];
+                ctx.fillRect(x, y, barW * 0.8, h);
+                ctx.fillStyle = "#94a3b8";
+                ctx.font = "11px sans-serif";
+                ctx.textAlign = "center";
+                ctx.fillText(d.region.split(" ")[0], x + barW * 0.4, H - 10);
+                ctx.fillStyle = "#e2e8f0";
+                ctx.fillText("$" + (d.revenue / 1000).toFixed(0) + "k", x + barW * 0.4, y - 8);
+            });
+        }
+
+        function initDashboard() {
+            const data = dm.getData();
+
+            /* KPI cards */
+            const totalRev = dm.getTotal("revenue");
+            const totalUnits = dm.getTotal("units");
+            const avgGrowth = data.reduce((s, r) => s + r.growth, 0) / data.length;
+            const kpis = [
+                { label: "Total Revenue", value: "$" + (totalRev / 1000).toFixed(0) + "k", color: "#60a5fa" },
+                { label: "Units Sold", value: totalUnits.toLocaleString(), color: "#34d399" },
+                { label: "Avg Growth", value: avgGrowth.toFixed(1) + "%", color: "#fbbf24" },
+                { label: "Regions", value: data.length, color: "#a78bfa" }
+            ];
+            document.getElementById("kpi-row").innerHTML = kpis.map(k =>
+                `<div class="kpi-card"><div class="kpi-label">${k.label}</div><div class="kpi-value" style="color:${k.color}">${k.value}</div></div>`
+            ).join("");
+
+            /* Table */
+            document.getElementById("tableBody").innerHTML = data.map(d =>
+                `<tr><td>${d.region}</td><td>$${d.revenue.toLocaleString()}</td><td>${d.units}</td><td style="color:${d.growth > 10 ? '#34d399' : '#fbbf24'}">${d.growth}%</td></tr>`
+            ).join("");
+
+            /* Chart */
+            drawChart(document.getElementById("mainChart"), data);
+        }
+
+        window.setDateRange = function(start, end) { initDashboard(); };
+        window.exportCSV = function() {
+            const csv = "Region,Revenue,Units,Growth\n" + dm.getData().map(d =>
+                [d.region, d.revenue, d.units, d.growth].join(",")
+            ).join("\n");
+            console.log(csv);
+        };
+
+        initDashboard();
+    </script>
+</body>
+</html>

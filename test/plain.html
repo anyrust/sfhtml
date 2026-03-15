@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<!-- AI-SKILL-HEADER START
+# Plain Page — (feature summary)
+
+## 1. Overview
+(App description, deployment method)
+
+## 2. Public JavaScript API
+(Functions exposed on window, parameters, return values, side effects)
+
+## 3. Automation Example
+(Puppeteer / Playwright examples)
+
+## 4. Conventions
+(Units, angle formats, state management rules)
+
+## 5. Key Internal Modules
+
+- `<script>`
+- `<button id="greet-btn">`
+- `<div id="output">`
+
+    AI-SKILL-HEADER END -->
+    <meta charset="UTF-8">
+    <title>Plain Page</title>
+</head>
+<body>
+    <h1>Hello World</h1>
+    <p>This is a plain HTML page with no AI-SKILL-HEADER.</p>
+    <button id="greet-btn">Click me</button>
+    <div id="output"></div>
+    <script>
+        document.getElementById("greet-btn").addEventListener("click", function() {
+            document.getElementById("output").textContent = "Hello from sfhtml!";
+        });
+    </script>
+</body>
+</html>

@@ -11,10 +11,6 @@ A fast, zero-dependency command-line tool for AI agents to **read**, **edit**, *
 [![Rust](https://img.shields.io/badge/Rust-96.5%25-orange.svg)](https://github.com/anyrust/sfhtml)
 [![PyPI](https://img.shields.io/pypi/v/sfhtml.svg)](https://pypi.org/project/sfhtml/)
 
-<img src="docs/images/dashboard-app.png" width="700" alt="sfhtml — Sales Dashboard rendered and captured via CLI">
-
-*A complete sales dashboard — rendered and screenshotted entirely via sfhtml CLI*
-
 </div>
 
 ---

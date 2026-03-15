@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sfhtml"
+version = "0.1.0"
+description = "Single-File HTML AI-Skill CLI — Python wrapper"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.8"
+authors = [{name = "anyrust", email = "ggen652@gmail.com"}]
+keywords = ["html", "single-file", "ai", "cli", "editor"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development :: Build Tools",
+    "Topic :: Text Processing :: Markup :: HTML",
+]
+
+[project.urls]
+Homepage = "https://github.com/anyrust/sfhtml"
+Repository = "https://github.com/anyrust/sfhtml"
+
+[project.scripts]
+sfhtml = "sfhtml.cli:main"

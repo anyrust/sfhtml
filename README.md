@@ -47,11 +47,18 @@ pip install sfhtml
 curl -fsSL https://raw.githubusercontent.com/anyrust/sfhtml/main/install.sh | sh
 ```
 
+### Quick install script (Windows PowerShell)
+```powershell
+irm https://raw.githubusercontent.com/anyrust/sfhtml/main/install.ps1 | iex
+```
+> Installs to `%USERPROFILE%\.sfhtml\bin` and adds it to your user PATH.
+
 ### From source
 ```bash
 git clone https://github.com/anyrust/sfhtml.git
 cd sfhtml && cargo build --release
 # Binary at target/release/sfhtml (~2.5 MB)
+# On Windows: target\release\sfhtml.exe
 ```
 
 ---
@@ -626,7 +633,7 @@ Run `sfhtml header-rebuild <file>` to auto-generate Section 5 from code. Run `sf
 
 | Principle | Details |
 |-----------|---------|
-| **Single binary** | Zero runtime deps — just copy and run (~2.5 MB) |
+| **Single binary** | Zero runtime deps — just copy and run (~2.5 MB). Works on Linux, macOS, and Windows |
 | **AI-first** | All commands support `--json` for structured output |
 | **Non-destructive** | `--dry-run` and auto-backup on writes, history with rollback |
 | **Gracefully optional** | Browser features warn if no Chrome found; core editing always works |

@@ -1,6 +1,7 @@
 #!/bin/sh
 # sfhtml installer — downloads the latest release binary for Linux/macOS
 # Usage: curl -fsSL https://raw.githubusercontent.com/anyrust/sfhtml/main/install.sh | sh
+# For Windows, use: irm https://raw.githubusercontent.com/anyrust/sfhtml/main/install.ps1 | iex
 
 set -e
 

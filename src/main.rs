@@ -70,8 +70,8 @@ enum Commands {
         /// Filter: only show entries whose path contains ALL given keywords
         #[arg(long, value_delimiter = ',')]
         r#match: Vec<String>,
-        /// Max non-HTML items (rough + dirs + other) to collect (default: 1000)
-        #[arg(long, default_value_t = 1000)]
+        /// Max non-HTML items (rough + dirs + other) to collect (default: 3000)
+        #[arg(long, default_value_t = 3000)]
         misc_limit: usize,
     },
 

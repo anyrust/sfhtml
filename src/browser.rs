@@ -30,29 +30,63 @@ pub struct BrowserProcess {
 
 /// Find a Chrome/Chromium/Edge binary on the system.
 pub fn find_browser() -> Option<PathBuf> {
-    let candidates = [
-        // Linux
+    // Platform-specific absolute path candidates
+    #[cfg(target_os = "windows")]
+    let absolute_candidates: Vec<PathBuf> = {
+        let program_files = std::env::var("ProgramFiles").unwrap_or_else(|_| r"C:\Program Files".to_string());
+        let program_files_x86 = std::env::var("ProgramFiles(x86)").unwrap_or_else(|_| r"C:\Program Files (x86)".to_string());
+        let local_app_data = std::env::var("LOCALAPPDATA").unwrap_or_default();
+        vec![
+            PathBuf::from(&program_files).join(r"Google\Chrome\Application\chrome.exe"),
+            PathBuf::from(&program_files_x86).join(r"Google\Chrome\Application\chrome.exe"),
+            PathBuf::from(&local_app_data).join(r"Google\Chrome\Application\chrome.exe"),
+            PathBuf::from(&program_files).join(r"Microsoft\Edge\Application\msedge.exe"),
+            PathBuf::from(&program_files_x86).join(r"Microsoft\Edge\Application\msedge.exe"),
+            PathBuf::from(&program_files).join(r"Chromium\Application\chrome.exe"),
+            PathBuf::from(&local_app_data).join(r"Chromium\Application\chrome.exe"),
+        ]
+    };
+
+    #[cfg(not(target_os = "windows"))]
+    let absolute_candidates: Vec<PathBuf> = vec![
+        // macOS
+        PathBuf::from("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+        PathBuf::from("/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"),
+        PathBuf::from("/Applications/Chromium.app/Contents/MacOS/Chromium"),
+    ];
+
+    // Check absolute paths first
+    for path in &absolute_candidates {
+        if path.exists() {
+            return Some(path.clone());
+        }
+    }
+
+    // PATH-searchable names
+    #[cfg(target_os = "windows")]
+    let path_candidates = ["chrome.exe", "msedge.exe", "chromium.exe"];
+
+    #[cfg(not(target_os = "windows"))]
+    let path_candidates = [
         "google-chrome",
         "google-chrome-stable",
         "chromium",
         "chromium-browser",
         "microsoft-edge",
         "microsoft-edge-stable",
-        // macOS
-        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-        "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
-        "/Applications/Chromium.app/Contents/MacOS/Chromium",
     ];
 
-    for c in &candidates {
-        let path = Path::new(c);
-        if path.is_absolute() && path.exists() {
-            return Some(path.to_path_buf());
-        }
-        // Search via `which`
-        if let Ok(output) = Command::new("which").arg(c).output() {
+    // Search via `where` (Windows) or `which` (Unix)
+    #[cfg(target_os = "windows")]
+    let which_cmd = "where";
+    #[cfg(not(target_os = "windows"))]
+    let which_cmd = "which";
+
+    for c in &path_candidates {
+        if let Ok(output) = Command::new(which_cmd).arg(c).output() {
             if output.status.success() {
-                let p = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                let p = String::from_utf8_lossy(&output.stdout)
+                    .lines().next().unwrap_or("").trim().to_string();
                 if !p.is_empty() {
                     return Some(PathBuf::from(p));
                 }
@@ -76,7 +110,7 @@ pub fn launch_browser(
     let browser = find_browser().ok_or_else(|| {
         anyhow!(
             "No Chrome/Chromium/Edge found. Install one or use --port to connect to an existing browser.\n\
-             Candidates: google-chrome, chromium, microsoft-edge"
+             Candidates: google-chrome, chromium, microsoft-edge, chrome.exe, msedge.exe"
         )
     })?;
 

@@ -61,6 +61,21 @@ cd sfhtml && cargo build --release
 # On Windows: target\release\sfhtml.exe
 ```
 
+### AI Skill setup (VS Code Copilot)
+
+Download the SKILL.md into your project root so that Copilot automatically uses sfhtml when editing `.html` files:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/anyrust/sfhtml/main/SKILL.md -o SKILL.md
+```
+
+Or on Windows PowerShell:
+```powershell
+irm https://raw.githubusercontent.com/anyrust/sfhtml/main/SKILL.md -OutFile SKILL.md
+```
+
+> This teaches Copilot the full sfhtml workflow — scan, read, edit, validate, and interact with single-file HTML apps. The skill activates automatically for all `**/*.html` files in the workspace.
+
 ---
 
 ## Quick Start

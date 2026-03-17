@@ -5,6 +5,7 @@ mod differ;
 mod header;
 mod history;
 mod js_scope;
+mod live;
 mod locator;
 mod module_deps;
 mod page;
@@ -251,6 +252,21 @@ enum Commands {
         /// Context type: cli, header, js, html
         #[arg(long, default_value = "cli")]
         context: String,
+    },
+
+    /// Serve an HTML file with live reload (file watch + WebSocket push)
+    Serve {
+        /// HTML file to serve
+        file: PathBuf,
+        /// HTTP port
+        #[arg(long, default_value_t = 8080)]
+        port: u16,
+        /// Open browser automatically
+        #[arg(long, default_value_t = false)]
+        open: bool,
+        /// Inject live-reload client script (enabled by default)
+        #[arg(long, default_value_t = true)]
+        live: bool,
     },
 
     /// Launch/manage a browser with CDP debugging
@@ -850,6 +866,11 @@ fn run(cli: Cli) -> Result<i32> {
             } else {
                 Ok(1)
             }
+        }
+
+        Commands::Serve { file, port, open, live: live_inject } => {
+            live::serve(&file, port, open, live_inject)?;
+            Ok(0)
         }
 
         Commands::Debug { action } => {

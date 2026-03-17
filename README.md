@@ -578,6 +578,11 @@ Stopped session on port 9666
 | `history delete <id>` | Delete a specific history entry |
 | `history clean` | Clear all history entries |
 
+### Live Serve
+| Command | Description |
+|---------|-------------|
+| `serve <file>` | Serve HTML with live reload — file watch + WebSocket push (`--port`, `--open`, `--live`) |
+
 ### Page Interaction (Browser via CDP)
 | Command | Description |
 |---------|-------------|

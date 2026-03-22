@@ -12,6 +12,7 @@ mod page;
 mod reader;
 mod scanner;
 mod search;
+mod stats;
 mod syntax_check;
 mod validator;
 
@@ -42,6 +43,26 @@ struct Cli {
     /// Step-by-step execution log to stderr
     #[arg(long, global = true, default_value_t = false)]
     trace: bool,
+
+    /// Show only the first N lines of output
+    #[arg(long, global = true)]
+    head: Option<usize>,
+
+    /// Show only the last N lines of output
+    #[arg(long, global = true)]
+    tail: Option<usize>,
+
+    /// Filter output lines matching a pattern
+    #[arg(long, global = true)]
+    grep: Option<String>,
+
+    /// Print the number of output lines instead of content
+    #[arg(long, global = true, default_value_t = false)]
+    count: bool,
+
+    /// Truncate output to at most N bytes
+    #[arg(long, global = true)]
+    truncate: Option<usize>,
 }
 
 #[derive(Subcommand)]
@@ -53,16 +74,10 @@ enum Commands {
         /// Scan recursively
         #[arg(long, default_value_t = false)]
         recursive: bool,
-        /// Number of concurrent worker threads (0 = auto)
-        #[arg(long, default_value_t = 0)]
-        jobs: usize,
         /// Return only top N HTML results (0 = all)
         #[arg(long, default_value_t = 0)]
         top: usize,
-        /// Show summary statistics only (auto-enabled when HTML > 300)
-        #[arg(long, default_value_t = false)]
-        summary: bool,
-        /// Sort by: modified (default), created, name, size
+        /// Sort by: modified (default), created, name, size, relevance
         #[arg(long, default_value = "modified")]
         sort_by: String,
         /// Sort order: desc (default), asc
@@ -71,9 +86,9 @@ enum Commands {
         /// Filter: only show entries whose path contains ALL given keywords
         #[arg(long, value_delimiter = ',')]
         r#match: Vec<String>,
-        /// Max non-HTML items (rough + dirs + other) to collect (default: 3000)
-        #[arg(long, default_value_t = 3000)]
-        misc_limit: usize,
+        /// Expand results: inline full header for each matched file (enables 3-step workflow)
+        #[arg(long, default_value_t = false)]
+        expand: bool,
     },
 
     /// Search HTML files by query with TF-based scoring
@@ -249,9 +264,15 @@ enum Commands {
     CheckOutput {
         /// File to check (omit for stdin)
         file: Option<PathBuf>,
-        /// Context type: cli, header, js, html
+        /// Check mode: cli, header, js, html
         #[arg(long, default_value = "cli")]
-        context: String,
+        mode: String,
+    },
+
+    /// Show file metadata, usage stats, and structure summary
+    Stat {
+        /// HTML file path
+        file: PathBuf,
     },
 
     /// Serve an HTML file with live reload (file watch + WebSocket push)
@@ -472,28 +493,84 @@ fn run(cli: Cli) -> Result<i32> {
     let json = cli.json;
     let _trace = cli.trace;
 
-    match cli.command {
-        Commands::Scan { dir, recursive, jobs, top, summary, sort_by, order, r#match, misc_limit } => {
+    // Compute deadline from --timeout
+    let deadline = cli.timeout.and_then(|ms| {
+        if ms == 0 { None } else { Some(std::time::Instant::now() + std::time::Duration::from_millis(ms)) }
+    });
+
+    // Capture output controls
+    let oc_head = cli.head;
+    let oc_tail = cli.tail;
+    let oc_grep = cli.grep.clone();
+    let oc_count = cli.count;
+    let oc_truncate = cli.truncate;
+
+    let (output_text, exit_code) = match cli.command {
+        Commands::Scan { dir, recursive, top, sort_by, order, r#match, expand } => {
             let sort_key = scanner::SortKey::from_str(&sort_by);
             let sort_order = scanner::SortOrder::from_str(&order);
-            let result = scanner::scan_directory(&dir, recursive, jobs, sort_key, sort_order, &r#match, misc_limit)?;
-            if json {
-                println!("{}", serde_json::to_string_pretty(&result)?);
-            } else if summary || (!summary && top == 0 && result.html_total > 300) {
-                println!("{}", scanner::format_summary(&result));
-            } else {
-                println!("{}", scanner::format_text(&result, top));
+            let mut result = scanner::scan_directory(&dir, recursive, sort_key, sort_order, &r#match, deadline)?;
+            // Inject usage stats into scan results
+            let stats_data = stats::load();
+            scanner::inject_stats(&mut result.html_files, &stats_data);
+            // Re-sort if relevance was requested (needs calls data)
+            if matches!(sort_key, scanner::SortKey::Relevance) {
+                result.html_files.sort_by(|a, b| {
+                    let ra = stats::relevance(a.calls, a.modified_ts);
+                    let rb = stats::relevance(b.calls, b.modified_ts);
+                    rb.partial_cmp(&ra).unwrap_or(std::cmp::Ordering::Equal)
+                });
             }
-            Ok(0)
+            let text = if json {
+                if expand {
+                    // In JSON mode with expand, inject header_text into each result
+                    let mut json_val = serde_json::to_value(&result)?;
+                    if let Some(files) = json_val.get_mut("html_files").and_then(|v| v.as_array_mut()) {
+                        for (i, r) in result.html_files.iter().enumerate() {
+                            if r.has_header {
+                                let full_path = dir.join(&r.path);
+                                if let Ok(content) = std::fs::read_to_string(&full_path) {
+                                    if let Ok(h) = header::extract_header(&content) {
+                                        files[i]["header"] = serde_json::Value::String(h.full_markdown);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    serde_json::to_string_pretty(&json_val)?
+                } else {
+                    serde_json::to_string_pretty(&result)?
+                }
+            } else {
+                let mut t = scanner::format_text(&result, top);
+                if expand {
+                    let display_count = if top > 0 && top < result.html_files.len() { top } else { result.html_files.len() };
+                    for r in result.html_files.iter().take(display_count) {
+                        if r.has_header {
+                            let full_path = dir.join(&r.path);
+                            if let Ok(content) = std::fs::read_to_string(&full_path) {
+                                if let Ok(h) = header::extract_header(&content) {
+                                    t.push_str(&format!("\n━━ {} ━━\n{}\n", r.path, h.full_markdown));
+                                }
+                            }
+                        }
+                    }
+                }
+                if result.timed_out {
+                    t.push_str(&scanner::format_timeout_summary(&result));
+                }
+                t
+            };
+            (text, 0)
         }
 
         Commands::Search { query, dir, top, context } => {
             let results = search::search_files(&dir, &query, top, context)?;
-            println!("{}", serde_json::to_string_pretty(&results)?);
-            Ok(0)
+            (serde_json::to_string_pretty(&results)?, 0)
         }
 
         Commands::Header { file, section } => {
+            stats::increment(&file);
             let file_size = std::fs::metadata(&file)?.len();
             const HEADER_SIZE_LIMIT: u64 = 50 * 1024; // 50KB
             if file_size > HEADER_SIZE_LIMIT {
@@ -511,55 +588,60 @@ fn run(cli: Cli) -> Result<i32> {
                 } else {
                     h.full_markdown.clone()
                 };
-                println!("{}", header_text);
                 eprintln!("\n⚠ File size ({:.1} KB) exceeds 50 KB limit. Use `sfhtml read {} --head N` or `sfhtml locate {} <anchor>` to inspect code sections.",
                     file_size as f64 / 1024.0, file.display(), file.display());
+                (header_text, 0)
             } else {
                 let content = std::fs::read_to_string(&file)?;
                 if let Some(section_num) = section {
                     let s = header::extract_section(&content, section_num)?;
-                    if json {
-                        println!("{}", serde_json::to_string_pretty(&s)?);
+                    let text = if json {
+                        serde_json::to_string_pretty(&s)?
                     } else {
-                        println!("## {}. {}\n{}", s.number, s.title, s.content);
-                    }
+                        format!("## {}. {}\n{}", s.number, s.title, s.content)
+                    };
+                    (text, 0)
                 } else {
                     let h = header::extract_header(&content)?;
-                    if json {
-                        println!("{}", serde_json::to_string_pretty(&h)?);
+                    let text = if json {
+                        serde_json::to_string_pretty(&h)?
                     } else {
-                        println!("{}", h.full_markdown);
-                    }
+                        h.full_markdown.clone()
+                    };
+                    (text, 0)
                 }
             }
-            Ok(0)
         }
 
         Commands::Locate { file, anchor, context } => {
+            stats::increment(&file);
             let content = std::fs::read_to_string(&file)?;
             let result = locator::locate_anchor(&content, &anchor, context)?;
-            if json {
-                println!("{}", serde_json::to_string_pretty(&result)?);
+            let text = if json {
+                serde_json::to_string_pretty(&result)?
             } else {
+                let mut out = String::new();
                 for m in &result.matches {
                     let end_str = m.end_line
                         .map(|e| format!("-{}", e))
                         .unwrap_or_default();
-                    println!("Anchor \"{}\" found at line {}{}:", result.anchor, m.line, end_str);
-                    println!("{}", m.context_preview);
-                    println!();
+                    out.push_str(&format!("Anchor \"{}\" found at line {}{}:\n", result.anchor, m.line, end_str));
+                    out.push_str(&m.context_preview);
+                    out.push('\n');
                 }
-            }
-            Ok(0)
+                out
+            };
+            (text, 0)
         }
 
         Commands::Read { file, start_line, end_line, head, tail } => {
+            stats::increment(&file);
             let output = reader::read_lines(&file, start_line, end_line, head, tail)?;
-            print!("{}", output);
-            Ok(0)
+            (output, 0)
         }
 
         Commands::Apply { file, diff, dry_run, backup, fuzz, force } => {
+            stats::increment(&file);
             let diff_text = if diff == "-" {
                 let mut buf = String::new();
                 std::io::stdin().read_to_string(&mut buf)?;
@@ -573,7 +655,7 @@ fn run(cli: Cli) -> Result<i32> {
                 .and_then(|n| n.to_str())
                 .unwrap_or("file");
 
-            if json {
+            let text = if json {
                 let validation_json = result.validation.as_ref().map(|v| {
                     let status_str = match v.status {
                         applier::ApplyStatus::Success => "success",
@@ -607,83 +689,88 @@ fn run(cli: Cli) -> Result<i32> {
                     "hunk_details": hunk_details_json,
                     "validation": validation_json,
                 });
-                println!("{}", serde_json::to_string_pretty(&json_result)?);
+                serde_json::to_string_pretty(&json_result)?
             } else {
-                print!("{}", applier::format_apply_result(&result, file_name));
-            }
-            Ok(0)
+                applier::format_apply_result(&result, file_name)
+            };
+            (text, 0)
         }
 
         Commands::Diff { file, old_file, context } => {
+            stats::increment(&file);
+            stats::increment(&old_file);
             let new_text = std::fs::read_to_string(&file)?;
             let old_text = std::fs::read_to_string(&old_file)?;
             let new_name = file.file_name().and_then(|n| n.to_str()).unwrap_or("new");
             let old_name = old_file.file_name().and_then(|n| n.to_str()).unwrap_or("old");
             let diff_output = differ::generate_diff(&old_text, &new_text, old_name, new_name, context);
-            print!("{}", diff_output);
-            Ok(0)
+            (diff_output, 0)
         }
 
         Commands::AnchorList { file, top } => {
+            stats::increment(&file);
             let content = std::fs::read_to_string(&file)?;
             let anchors = locator::list_anchors(&content);
             let display: &[locator::AnchorListEntry] = if top > 0 { &anchors[..std::cmp::min(top, anchors.len())] } else { &anchors };
-            if json {
-                println!("{}", serde_json::to_string_pretty(&display)?);
+            let text = if json {
+                serde_json::to_string_pretty(&display)?
             } else {
+                let mut out = String::new();
                 for a in display {
                     let header_mark = if a.in_header { "" } else { " [not in header]" };
-                    println!("{:<40} line {:>6}  {}{}", a.name, a.line, a.anchor_type, header_mark);
+                    out.push_str(&format!("{:<40} line {:>6}  {}{}\n", a.name, a.line, a.anchor_type, header_mark));
                 }
                 if top > 0 && anchors.len() > top {
-                    println!("\n... and {} more (use --top 0 to show all)", anchors.len() - top);
+                    out.push_str(&format!("\n... and {} more (use --top 0 to show all)\n", anchors.len() - top));
                 }
-            }
-            Ok(0)
+                out
+            };
+            (text, 0)
         }
 
         Commands::Validate { file, syntax, fix } => {
+            stats::increment(&file);
             let content = std::fs::read_to_string(&file)?;
 
-            if fix {
-                // Auto-fix by running header-rebuild
+            let text = if fix {
                 let new_content = header::rebuild_header(&content, true)?;
                 std::fs::write(&file, &new_content)?;
-                println!("Header rebuilt. Re-validating...\n");
                 let result = validator::validate_file(&new_content, syntax)?;
+                let mut out = String::from("Header rebuilt. Re-validating...\n\n");
                 if json {
-                    println!("{}", serde_json::to_string_pretty(&result)?);
+                    out.push_str(&serde_json::to_string_pretty(&result)?);
                 } else {
-                    print!("{}", validator::format_text(&result));
+                    out.push_str(&validator::format_text(&result));
                 }
+                out
             } else {
                 let result = validator::validate_file(&content, syntax)?;
                 if json {
-                    println!("{}", serde_json::to_string_pretty(&result)?);
+                    serde_json::to_string_pretty(&result)?
                 } else {
-                    print!("{}", validator::format_text(&result));
+                    validator::format_text(&result)
                 }
-            }
-            Ok(0)
+            };
+            (text, 0)
         }
 
         Commands::HeaderRebuild { file, dry_run, preserve_descriptions } => {
+            stats::increment(&file);
             let content = std::fs::read_to_string(&file)?;
             let new_content = header::rebuild_header(&content, preserve_descriptions)?;
 
             if dry_run {
-                println!("{}", new_content);
+                (new_content, 0)
             } else {
                 std::fs::write(&file, &new_content)?;
-                println!("Header rebuilt successfully.");
+                (String::from("Header rebuilt successfully."), 0)
             }
-            Ok(0)
         }
 
         Commands::Init { file } => {
+            stats::increment(&file);
             let content = std::fs::read_to_string(&file)?;
 
-            // Check if header already exists
             if content.contains("<!-- AI-SKILL-HEADER START") {
                 eprintln!("Error: File already has an AI-SKILL-HEADER.");
                 return Ok(1);
@@ -691,39 +778,38 @@ fn run(cli: Cli) -> Result<i32> {
 
             let new_content = header::generate_init_header(&content)?;
             std::fs::write(&file, &new_content)?;
-            println!("AI-SKILL-HEADER injected into {}", file.display());
-            Ok(0)
+            (format!("AI-SKILL-HEADER injected into {}", file.display()), 0)
         }
 
         Commands::Create { path, title, with_header, force } => {
             creator::create_html(&path, &title, with_header, force)?;
-            if json {
-                println!("{}", serde_json::json!({
+            let text = if json {
+                serde_json::json!({
                     "created": path.display().to_string(),
                     "with_header": with_header,
-                }));
+                }).to_string()
             } else {
-                println!("Created {}{}", path.display(),
-                    if with_header { " (with AI-SKILL-HEADER)" } else { "" });
-            }
-            Ok(0)
+                format!("Created {}{}", path.display(),
+                    if with_header { " (with AI-SKILL-HEADER)" } else { "" })
+            };
+            (text, 0)
         }
 
         Commands::SaveAs { source, dest, inject_header, force } => {
             creator::save_as(&source, &dest, inject_header, force)?;
-            if json {
-                println!("{}", serde_json::json!({
+            let text = if json {
+                serde_json::json!({
                     "source": source.display().to_string(),
                     "dest": dest.display().to_string(),
                     "header_injected": inject_header && !std::fs::read_to_string(&dest)
                         .map(|c| c.contains("<!-- AI-SKILL-HEADER START"))
                         .unwrap_or(false),
-                }));
+                }).to_string()
             } else {
-                println!("Saved {} → {}{}", source.display(), dest.display(),
-                    if inject_header { " (header injected)" } else { "" });
-            }
-            Ok(0)
+                format!("Saved {} → {}{}", source.display(), dest.display(),
+                    if inject_header { " (header injected)" } else { "" })
+            };
+            (text, 0)
         }
 
         Commands::History { action } => {
@@ -731,124 +817,124 @@ fn run(cli: Cli) -> Result<i32> {
                 HistoryAction::List { file, top } => {
                     let entries = history::list_entries(file.as_deref())?;
                     let display = if top > 0 { &entries[..std::cmp::min(top, entries.len())] } else { &entries[..] };
-                    if json {
-                        println!("{}", serde_json::to_string_pretty(&display)?);
+                    let text = if json {
+                        serde_json::to_string_pretty(&display)?
                     } else if entries.is_empty() {
-                        println!("No history entries found.");
+                        String::from("No history entries found.")
                     } else {
                         let cache_size = history::cache_size()?;
-                        println!("Diff history ({} entries, {:.1} KB / 10240 KB):\n",
+                        let mut out = format!("Diff history ({} entries, {:.1} KB / 10240 KB):\n\n",
                             entries.len(), cache_size as f64 / 1024.0);
                         for e in display {
-                            println!("  {} | {} | {} | +{} -{} | {}",
+                            out.push_str(&format!("  {} | {} | {} | +{} -{} | {}\n",
                                 e.id, e.timestamp_human, e.file_path,
-                                e.lines_added, e.lines_removed, e.description);
+                                e.lines_added, e.lines_removed, e.description));
                         }
                         if top > 0 && entries.len() > top {
-                            println!("\n... and {} more (use --top 0 to show all)", entries.len() - top);
+                            out.push_str(&format!("\n... and {} more (use --top 0 to show all)\n", entries.len() - top));
                         }
-                    }
-                    Ok(0)
+                        out
+                    };
+                    (text, 0)
                 }
 
                 HistoryAction::Show { id } => {
                     let entry = history::show_entry(&id)?;
-                    if json {
-                        println!("{}", serde_json::to_string_pretty(&entry)?);
+                    let text = if json {
+                        serde_json::to_string_pretty(&entry)?
                     } else {
-                        println!("ID:        {}", entry.id);
-                        println!("File:      {}", entry.file_path);
-                        println!("Time:      {}", entry.timestamp_human);
-                        println!("Changes:   +{} -{} ({} hunks)",
-                            entry.lines_added, entry.lines_removed, entry.hunks_applied);
-                        println!("\n--- Forward Diff ---\n{}", entry.diff_text);
-                        println!("\n--- Reverse Diff (for rollback) ---\n{}", entry.reverse_diff);
-                    }
-                    Ok(0)
+                        format!("ID:        {}\nFile:      {}\nTime:      {}\nChanges:   +{} -{} ({} hunks)\n\n--- Forward Diff ---\n{}\n\n--- Reverse Diff (for rollback) ---\n{}",
+                            entry.id, entry.file_path, entry.timestamp_human,
+                            entry.lines_added, entry.lines_removed, entry.hunks_applied,
+                            entry.diff_text, entry.reverse_diff)
+                    };
+                    (text, 0)
                 }
 
                 HistoryAction::Rollback { file, id, dry_run, fuzz } => {
                     let result = history::rollback(&file, &id, fuzz, dry_run)?;
-                    if json {
-                        println!("{}", serde_json::json!({
+                    let text = if json {
+                        serde_json::json!({
                             "rollback": !dry_run,
                             "id": id,
                             "message": result,
-                        }));
+                        }).to_string()
                     } else if dry_run {
-                        println!("--- Dry run: reverse diff to apply ---\n{}", result);
+                        format!("--- Dry run: reverse diff to apply ---\n{}", result)
                     } else {
-                        println!("{}", result);
-                    }
-                    Ok(0)
+                        result
+                    };
+                    (text, 0)
                 }
 
                 HistoryAction::Delete { id } => {
                     let freed = history::delete_entry(&id)?;
-                    if json {
-                        println!("{}", serde_json::json!({
+                    let text = if json {
+                        serde_json::json!({
                             "deleted": id,
                             "freed_bytes": freed,
-                        }));
+                        }).to_string()
                     } else {
-                        println!("Deleted history entry: {} (freed {} bytes)", id, freed);
-                    }
-                    Ok(0)
+                        format!("Deleted history entry: {} (freed {} bytes)", id, freed)
+                    };
+                    (text, 0)
                 }
 
                 HistoryAction::Status => {
                     let size = history::cache_size()?;
                     let entries = history::list_entries(None)?;
                     let dir = history::cache_dir()?;
-                    if json {
-                        println!("{}", serde_json::json!({
+                    let text = if json {
+                        serde_json::json!({
                             "cache_dir": dir.display().to_string(),
                             "entries": entries.len(),
                             "size_bytes": size,
                             "limit_bytes": 10 * 1024 * 1024,
                             "usage_percent": (size as f64 / (10.0 * 1024.0 * 1024.0) * 100.0),
-                        }));
+                        }).to_string()
                     } else {
-                        println!("Cache dir:  {}", dir.display());
-                        println!("Entries:    {}", entries.len());
-                        println!("Size:       {:.1} KB / 10240 KB ({:.1}%)",
+                        format!("Cache dir:  {}\nEntries:    {}\nSize:       {:.1} KB / 10240 KB ({:.1}%)",
+                            dir.display(), entries.len(),
                             size as f64 / 1024.0,
-                            size as f64 / (10.0 * 1024.0 * 1024.0) * 100.0);
-                    }
-                    Ok(0)
+                            size as f64 / (10.0 * 1024.0 * 1024.0) * 100.0)
+                    };
+                    (text, 0)
                 }
 
                 HistoryAction::Clean => {
                     let (removed, freed) = history::clean_cache()?;
-                    if json {
-                        println!("{}", serde_json::json!({
+                    let text = if json {
+                        serde_json::json!({
                             "removed": removed,
                             "freed_bytes": freed,
-                        }));
+                        }).to_string()
                     } else {
-                        println!("Cleaned {} entries, freed {:.1} KB", removed, freed as f64 / 1024.0);
-                    }
-                    Ok(0)
+                        format!("Cleaned {} entries, freed {:.1} KB", removed, freed as f64 / 1024.0)
+                    };
+                    (text, 0)
                 }
             }
         }
 
         Commands::Module { file, depth, top } => {
+            stats::increment(&file);
             let result = if depth > 0 {
                 module_deps::scan_deps_recursive(&file, depth)?
             } else {
                 module_deps::scan_deps(&file)?
             };
-            if json {
-                println!("{}", serde_json::to_string_pretty(&result)?);
+            let text = if json {
+                serde_json::to_string_pretty(&result)?
             } else {
-                print!("{}", module_deps::format_text(&result, top));
-            }
-            if result.missing > 0 { Ok(1) } else { Ok(0) }
+                module_deps::format_text(&result, top)
+            };
+            let code = if result.missing > 0 { 1 } else { 0 };
+            (text, code)
         }
 
-        Commands::CheckOutput { file, context } => {
+        Commands::CheckOutput { file, mode } => {
             let text = if let Some(path) = file {
+                stats::increment(&path);
                 std::fs::read_to_string(&path)?
             } else {
                 let mut buf = String::new();
@@ -856,68 +942,131 @@ fn run(cli: Cli) -> Result<i32> {
                 buf
             };
 
-            let ctx = syntax_check::CheckContext::from_str(&context);
+            let ctx = syntax_check::CheckContext::from_str(&mode);
             let result = syntax_check::check_syntax(&text, ctx);
+            let code = if result.balanced { 0 } else { 1 };
+            (serde_json::to_string_pretty(&result)?, code)
+        }
 
-            println!("{}", serde_json::to_string_pretty(&result)?);
+        Commands::Stat { file } => {
+            stats::increment(&file);
+            let meta = std::fs::metadata(&file)?;
+            let size = meta.len();
+            let modified_ts = meta.modified()
+                .map(|t| t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs())
+                .unwrap_or(0);
+            let created_ts = meta.created()
+                .map(|t| t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs())
+                .unwrap_or(0);
 
-            if result.balanced {
-                Ok(0)
+            let content = std::fs::read_to_string(&file)?;
+            let line_count = content.lines().count();
+            let has_header = content.contains("<!-- AI-SKILL-HEADER START");
+
+            let anchor_count = locator::list_anchors(&content).len();
+            let deps = module_deps::scan_deps(&file).ok();
+            let dep_count = deps.as_ref().map(|d| d.total).unwrap_or(0);
+            let missing_deps = deps.as_ref().map(|d| d.missing).unwrap_or(0);
+
+            let file_stats = stats::get(&file);
+            let modified_ago = stats::format_ago(modified_ts);
+            let last_call_ago = if file_stats.last_call > 0 {
+                stats::format_ago(file_stats.last_call)
             } else {
-                Ok(1)
-            }
+                String::from("never")
+            };
+
+            let text = if json {
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "path": file.display().to_string(),
+                    "size_bytes": size,
+                    "lines": line_count,
+                    "has_header": has_header,
+                    "anchors": anchor_count,
+                    "dependencies": dep_count,
+                    "missing_dependencies": missing_deps,
+                    "modified_ts": modified_ts,
+                    "created_ts": created_ts,
+                    "calls": file_stats.calls,
+                    "last_call_ts": file_stats.last_call,
+                }))?
+            } else {
+                let mut out = String::new();
+                out.push_str(&format!("File:     {}\n", file.display()));
+                out.push_str(&format!("Size:     {} bytes ({:.1} KB)\n", size, size as f64 / 1024.0));
+                out.push_str(&format!("Lines:    {}\n", line_count));
+                out.push_str(&format!("Header:   {}\n", if has_header { "yes" } else { "no" }));
+                out.push_str(&format!("Anchors:  {}\n", anchor_count));
+                if dep_count > 0 || missing_deps > 0 {
+                    out.push_str(&format!("Deps:     {} (missing: {})\n", dep_count, missing_deps));
+                }
+                out.push_str(&format!("Modified: {}\n", modified_ago));
+                out.push_str(&format!("Calls:    {}\n", file_stats.calls));
+                if file_stats.last_call > 0 {
+                    out.push_str(&format!("Last use: {}\n", last_call_ago));
+                }
+                out
+            };
+            (text, 0)
         }
 
         Commands::Serve { file, port, open, live: live_inject } => {
+            stats::increment(&file);
             live::serve(&file, port, open, live_inject)?;
-            Ok(0)
+            (String::new(), 0)
         }
 
         Commands::Debug { action } => {
             match action {
                 DebugAction::Start { file, port, no_headless } => {
+                    stats::increment(&file);
                     let result = page::debug_start(&file, port, !no_headless);
                     match result {
                         Ok(v) => {
-                            if json { println!("{}", serde_json::to_string_pretty(&v)?); }
-                            else {
-                                println!("Browser started on port {} (pid {})",
-                                    v["port"], v["pid"]);
-                                println!("WebSocket: {}", v["ws_url"].as_str().unwrap_or(""));
-                                println!("\nUse `sfhtml page screenshot --port {}` to interact.", port);
-                            }
-                            Ok(0)
+                            let text = if json {
+                                serde_json::to_string_pretty(&v)?
+                            } else {
+                                format!("Browser started on port {} (pid {})\nWebSocket: {}\n\nUse `sfhtml page screenshot --port {}` to interact.",
+                                    v["port"], v["pid"], v["ws_url"].as_str().unwrap_or(""), port)
+                            };
+                            (text, 0)
                         }
                         Err(e) => {
                             eprintln!("⚠ debug start failed: {}", e);
                             eprintln!("All other sfhtml commands remain available.");
-                            Ok(1)
+                            (String::new(), 1)
                         }
                     }
                 }
                 DebugAction::Stop { port } => {
                     let result = page::debug_stop(port)?;
-                    if json { println!("{}", serde_json::to_string_pretty(&result)?); }
-                    else { println!("Stopped session on port {}", port); }
-                    Ok(0)
+                    let text = if json {
+                        serde_json::to_string_pretty(&result)?
+                    } else {
+                        format!("Stopped session on port {}", port)
+                    };
+                    (text, 0)
                 }
                 DebugAction::List => {
                     let result = page::debug_list()?;
-                    if json { println!("{}", serde_json::to_string_pretty(&result)?); }
-                    else {
+                    let text = if json {
+                        serde_json::to_string_pretty(&result)?
+                    } else {
                         let sessions = result["sessions"].as_array();
                         if let Some(arr) = sessions {
                             if arr.is_empty() {
-                                println!("No active browser sessions.");
+                                String::from("No active browser sessions.")
                             } else {
-                                for s in arr {
-                                    println!("  port {} | pid {} | {}",
-                                        s["port"], s["pid"], s["ws_url"].as_str().unwrap_or(""));
-                                }
+                                arr.iter().map(|s| {
+                                    format!("  port {} | pid {} | {}",
+                                        s["port"], s["pid"], s["ws_url"].as_str().unwrap_or(""))
+                                }).collect::<Vec<_>>().join("\n")
                             }
+                        } else {
+                            String::new()
                         }
-                    }
-                    Ok(0)
+                    };
+                    (text, 0)
                 }
             }
         }
@@ -942,15 +1091,85 @@ fn run(cli: Cli) -> Result<i32> {
 
             match page_result {
                 Ok(v) => {
-                    println!("{}", serde_json::to_string_pretty(&v)?);
-                    Ok(0)
+                    (serde_json::to_string_pretty(&v)?, 0)
                 }
                 Err(e) => {
                     eprintln!("⚠ page command failed: {}", e);
                     eprintln!("Ensure a browser session is running: `sfhtml debug start <file>`");
-                    Ok(1)
+                    (String::new(), 1)
                 }
             }
         }
+    };
+
+    // Apply output controls pipeline
+    let final_output = apply_output_controls(&output_text, oc_head, oc_tail, oc_grep.as_deref(), oc_count, oc_truncate);
+    if !final_output.is_empty() {
+        print!("{}", final_output);
+        // Ensure trailing newline
+        if !final_output.ends_with('\n') {
+            println!();
+        }
     }
+
+    Ok(exit_code)
+}
+
+/// Apply universal output controls: --head, --tail, --grep, --count, --truncate
+fn apply_output_controls(
+    text: &str,
+    head: Option<usize>,
+    tail: Option<usize>,
+    grep: Option<&str>,
+    count: bool,
+    truncate: Option<usize>,
+) -> String {
+    if head.is_none() && tail.is_none() && grep.is_none() && !count && truncate.is_none() {
+        return text.to_string();
+    }
+
+    let mut lines: Vec<&str> = text.lines().collect();
+
+    // --grep: filter lines matching pattern
+    if let Some(pattern) = grep {
+        let lower_pattern = pattern.to_lowercase();
+        lines.retain(|line| line.to_lowercase().contains(&lower_pattern));
+    }
+
+    // --head: keep only first N lines
+    if let Some(n) = head {
+        lines.truncate(n);
+    }
+
+    // --tail: keep only last N lines
+    if let Some(n) = tail {
+        if lines.len() > n {
+            lines = lines[lines.len() - n..].to_vec();
+        }
+    }
+
+    // --count: return line count instead of content
+    if count {
+        return format!("{}", lines.len());
+    }
+
+    let mut result = lines.join("\n");
+    if !lines.is_empty() {
+        result.push('\n');
+    }
+
+    // --truncate: cap output at N bytes
+    if let Some(max_bytes) = truncate {
+        if result.len() > max_bytes {
+            // Truncate at char boundary
+            let mut end = max_bytes;
+            while end > 0 && !result.is_char_boundary(end) {
+                end -= 1;
+            }
+            result.truncate(end);
+            result.push_str("\n... [truncated]\n");
+        }
+    }
+
+    result
 }
